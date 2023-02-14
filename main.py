@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.model_selection import StratifiedKFold, train_test_split
-from sklearn.metrics import roc_curve, roc_auc_score, auc as calc_auc
+from sklearn.metrics import roc_curve, roc_auc_score, auc as calc_auc, f1_score, accuracy_score
 import lightgbm as lgb
 
 from endaaman import Timer
@@ -196,12 +196,13 @@ class ModelResult:
     importance: pd.DataFrame
 
 @dataclass
-class ROCMetrics:
+class ModelMetrics:
     fpr: np.ndarray
     tpr: np.ndarray
     thresholds: np.ndarray
     auc: float
     ci: np.ndarray
+    scores: pd.DataFrame
 
 @dataclass
 class Experiment:
@@ -210,14 +211,36 @@ class Experiment:
     df: pd.DataFrame
 
     result: ModelResult
-    roc: ROCMetrics
+    metrics: ModelMetrics
 
     def train(self):
         self.result = train_data(self.df)
         fpr, tpr, thresholds = roc_curve(self.result.gt, self.result.pred)
         auc = calc_auc(fpr, tpr)
         ci = auc_ci(self.result.gt, self.result.pred)
-        self.roc = ROCMetrics(fpr, tpr, thresholds, auc, ci)
+
+        ii = {}
+        f1_scores = [f1_score(self.result.gt, self.result.pred > t) for t in thresholds]
+        acc_scores = [accuracy_score(self.result.gt, self.result.pred > t) for t in thresholds]
+
+        ii['f1'] = np.argmax(f1_scores)
+        ii['acc'] = np.argmax(acc_scores)
+        ii['youden'] = np.argmax(tpr - fpr)
+        ii['top-left'] = np.argmin((- tpr + 1) ** 2 + fpr ** 2)
+
+        scores = pd.DataFrame({
+            k: {
+                'acc': acc_scores[i],
+                'f1': f1_scores[i],
+                'recall': tpr[i],
+                'sensitivity': -fpr[i]+1,
+                'thres': thresholds[i],
+            } for k, i in ii.items()
+        }).transpose()
+
+        self.metrics = ModelMetrics(fpr, tpr, thresholds, auc, ci, scores)
+
+
 
 
 option_seed = click.option(
@@ -234,25 +257,29 @@ def cli():
 @cli.command()
 @option_seed
 @click.option('--dest', 'dest', default='out')
-@click.option('--with-plain-only', 'wpo', is_flag=True)
+@click.option('--plot', 'plot', default='pepl:ppl')
 @click.option('--show', 'show', is_flag=True)
-def train(seed, dest, wpo, show):
+def train(seed, dest, plot, show):
+    plot = plot.split(':')
     fix_random_states(seed)
     df = load_data()
 
     conditions = (
         (('plain', 'enhance'), ('primary', 'lymph')),
+        (('plain', 'enhance'), ('primary', )),
         (('plain', 'enhance'), ('lymph', )),
         (('plain', ), ('primary', 'lymph',)),
-        (('plain', ), ('lymph', )),
-        (('plain', 'enhance'), ('primary', )),
         (('plain', ), ('primary', )),
+        (('plain', ), ('lymph', )),
+        (('enhance', ), ('primary', 'lymph')),
+        (('enhance', ), ('primary', )),
+        (('enhance', ), ('lymph', )),
     )
 
     experiments = []
     for place, mode in conditions:
         cc = []
-        code = ''.join(p[0] for p in place) + '_' + ''.join(m[0] for m in mode)
+        code = ''.join(p[0] for p in place) + ''.join(m[0] for m in mode)
         label = '+'.join(place) + '/' + '+'.join(mode)
         for p in place:
             for m in mode:
@@ -263,7 +290,7 @@ def train(seed, dest, wpo, show):
             label=label,
             df=df[cc + [target_col, 'test']],
             result=None,
-            roc=None,
+            metrics=None,
         ))
 
     for e in experiments:
@@ -271,22 +298,43 @@ def train(seed, dest, wpo, show):
 
     os.makedirs(dest, exist_ok=True)
 
+    # write scores
+    scores = {}
+    for e in experiments:
+        scores[e.label] = {
+            'auc': e.metrics.auc,
+            'auc_lower': e.metrics.ci[0],
+            'auc_upper': e.metrics.ci[1],
+            'acc': e.metrics.scores.loc['acc', 'acc'],
+            'recall(youden)': e.metrics.scores.loc['youden', 'recall'],
+            'sensitivity(youden)': e.metrics.scores.loc['youden', 'sensitivity'],
+        }
+
+    df_score = pd.DataFrame(scores).transpose()
+    df_score.to_excel(os.path.join(dest, 'scores.xlsx'))
+
+    # write importance
     with pd.ExcelWriter(os.path.join(dest, 'importance.xlsx')) as writer:
         for e in experiments:
             e.result.importance.to_excel(writer, sheet_name=e.label.replace('/', '|'))
 
-    plt.rcParams['figure.figsize'] = (10, 8)
-    for e in experiments:
-        # if not wpo and not re.match('.*enhance', e.label):
-        #     continue
-        plt.plot(e.roc.fpr, e.roc.tpr,
-                 label=f'{e.label}={e.roc.auc*100:.1f}% ({e.roc.ci[0]*100:.1f}-{e.roc.ci[1]*100:.1f}%)')
 
-    plt.ylabel('tpr')
-    plt.xlabel('fpr')
+    # plot
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111)
+    for e in sorted(experiments, key=lambda e: -e.metrics.auc):
+        if not ('all' in plot or e.code in plot):
+            continue
+        ax.plot(
+            e.metrics.fpr, e.metrics.tpr,
+            label=f'{e.label}={e.metrics.auc*100:.1f}% ({e.metrics.ci[0]*100:.1f}-{e.metrics.ci[1]*100:.1f}%)'
+        )
+
+    ax.set_ylabel('tpr')
+    ax.set_xlabel('fpr')
     plt.grid()
     plt.legend()
-    plt.savefig(os.path.join(dest, f'roc{"_wpo" if wpo else "" }.png'))
+    plt.savefig(os.path.join(dest, f'roc_{"_".join(plot)}.png'))
     if show:
         plt.show()
 
