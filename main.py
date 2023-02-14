@@ -16,20 +16,6 @@ from endaaman import Timer
 from endaaman.torch import fix_random_states, get_global_seed
 
 
-@dataclass
-class ModelResult:
-    gt: np.ndarray
-    pred: np.ndarray
-    importance: pd.DataFrame
-
-@dataclass
-class Experiment:
-    code: str
-    label: str
-    df: pd.DataFrame
-    result: ModelResult
-
-
 plain_primary_cols = [
     '非造影超音波/原発巣_BIRADS',
     '非造影超音波/原発巣_lesion(0,1)',
@@ -48,8 +34,6 @@ plain_lymph_cols = [
     '非造影超音波/リンパ節_lymphsize_最大径(長径)',
     '非造影超音波/リンパ節_lymphsize_短径',
 ]
-
-plain_cols = plain_primary_cols + plain_lymph_cols
 
 enhance_primary_cols = [
     '造影超音波/原発巣_lesion(0,1)',
@@ -77,10 +61,23 @@ enhance_lymph_cols = [
     # '造影超音波/リンパ節_PI_実数',
 ]
 
-enhance_cols = enhance_primary_cols + enhance_lymph_cols
+# plain_cols = plain_primary_cols + plain_lymph_cols
+# enhance_cols = enhance_primary_cols + enhance_lymph_cols
+# primary_cols = plain_primary_cols + enhance_primary_cols
+# lymhp_cols = plain_lymph_cols + enhance_lymph_cols
 
-feature_cols = plain_cols + enhance_cols
+COLs = {
+    'plain': {
+        'primary': plain_primary_cols,
+        'lymph': plain_lymph_cols,
+    },
+    'enhance': {
+        'primary': enhance_primary_cols,
+        'lymph': enhance_lymph_cols,
+    },
+}
 
+# feature_cols = plain_cols + enhance_cols
 # cols_map =  {
 #     c:re.sub('[^A-Za-z0-9_]+', '', c) for c in feature_cols
 # }
@@ -98,6 +95,10 @@ def load_data():
     ]
     df = df.dropna(subset=[target_col])
     df[target_col] = df[target_col] > 0
+
+    df['test'] = 0
+    __df_train, df_test = train_test_split(df, shuffle=True, stratify=df[target_col])
+    df.loc[df_test.index, 'test'] = 1
     return df
 
 def train_model(x_train, y_train, x_valid, y_valid, fold):
@@ -132,7 +133,8 @@ def train_model(x_train, y_train, x_valid, y_valid, fold):
 
 
 def train_data(df, num_folds=5):
-    df_train, df_test = train_test_split(df, shuffle=True, stratify=df[target_col])
+    df_train = df[df['test'] < 1].drop(['test'], axis=1)
+    df_test = df[df['test'] > 0].drop(['test'], axis=1)
     folds = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=get_global_seed())
     folds = folds.split(np.arange(len(df_train)), y=df_train[target_col])
     folds = list(folds)
@@ -160,6 +162,7 @@ def train_data(df, num_folds=5):
     importance = importance.transpose()
     importance['mean'] = mean
     importance = importance.sort_values(by='mean', ascending=False)
+    importance = importance[importance.columns[[-1, *range(num_folds)]]]
 
     preds = []
     for model in models:
@@ -182,54 +185,110 @@ def auc_ci(y_true, y_score):
     SE_AUC = np.sqrt((AUC*(1 - AUC) + (N1 - 1)*(Q1 - AUC**2) + (N2 - 1)*(Q2 - AUC**2)) / (N1*N2))
     lower = AUC - 1.96*SE_AUC
     upper = AUC + 1.96*SE_AUC
-    if lower < 0:
-        lower = 0
-    if upper > 1:
-        upper = 1
-    return (lower, upper)
+    return np.clip([lower, upper], 0.0, 1.0)
 
+
+
+@dataclass
+class ModelResult:
+    gt: np.ndarray
+    pred: np.ndarray
+    importance: pd.DataFrame
+
+@dataclass
+class ROCMetrics:
+    fpr: np.ndarray
+    tpr: np.ndarray
+    thresholds: np.ndarray
+    auc: float
+    ci: np.ndarray
+
+@dataclass
+class Experiment:
+    code: str
+    label: str
+    df: pd.DataFrame
+
+    result: ModelResult
+    roc: ROCMetrics
+
+    def train(self):
+        self.result = train_data(self.df)
+        fpr, tpr, thresholds = roc_curve(self.result.gt, self.result.pred)
+        auc = calc_auc(fpr, tpr)
+        ci = auc_ci(self.result.gt, self.result.pred)
+        self.roc = ROCMetrics(fpr, tpr, thresholds, auc, ci)
+
+
+option_seed = click.option(
+    '--seed',
+    'seed',
+    type=int,
+    default=42,
+)
 
 @click.group()
 def cli():
-    fix_random_states(42)
+    pass
 
 @cli.command()
+@option_seed
 @click.option('--dest', 'dest', default='out')
-def train(dest):
+@click.option('--with-plain-only', 'wpo', is_flag=True)
+@click.option('--show', 'show', is_flag=True)
+def train(seed, dest, wpo, show):
+    fix_random_states(seed)
     df = load_data()
-    ee = [
-        Experiment(
-            code='p',
-            label='plain',
-            df=df[plain_cols + [target_col]],
+
+    conditions = (
+        (('plain', 'enhance'), ('primary', 'lymph')),
+        (('plain', 'enhance'), ('lymph', )),
+        (('plain', ), ('primary', 'lymph',)),
+        (('plain', ), ('lymph', )),
+        (('plain', 'enhance'), ('primary', )),
+        (('plain', ), ('primary', )),
+    )
+
+    experiments = []
+    for place, mode in conditions:
+        cc = []
+        code = ''.join(p[0] for p in place) + '_' + ''.join(m[0] for m in mode)
+        label = '+'.join(place) + '/' + '+'.join(mode)
+        for p in place:
+            for m in mode:
+                cc += COLs[p][m]
+
+        experiments.append(Experiment(
+            code=code,
+            label=label,
+            df=df[cc + [target_col, 'test']],
             result=None,
-        ),
-        Experiment(
-            code='pe',
-            label='plain+enhance',
-            df=df[plain_cols + enhance_cols + [target_col]],
-            result=None,
-        )
-    ]
-    for e in ee:
-        e.result = train_data(e.df)
+            roc=None,
+        ))
+
+    for e in experiments:
+        e.train()
 
     os.makedirs(dest, exist_ok=True)
 
-    for e in ee:
-        fpr, tpr, __thresholds = roc_curve(e.result.gt, e.result.pred)
-        auc = calc_auc(fpr, tpr)
-        ci = auc_ci(e.result.gt, e.result.pred)
-        e.result.importance.to_excel(os.path.join(dest, f'importance_{e.code}.xlsx'))
-        plt.plot(fpr, tpr, label=f'{e.label}={auc*100:.1f}% ({ci[0]*100:.1f}-{ci[1]*100:.1f}%)')
+    with pd.ExcelWriter(os.path.join(dest, 'importance.xlsx')) as writer:
+        for e in experiments:
+            e.result.importance.to_excel(writer, sheet_name=e.label.replace('/', '|'))
 
+    plt.rcParams['figure.figsize'] = (10, 8)
+    for e in experiments:
+        # if not wpo and not re.match('.*enhance', e.label):
+        #     continue
+        plt.plot(e.roc.fpr, e.roc.tpr,
+                 label=f'{e.label}={e.roc.auc*100:.1f}% ({e.roc.ci[0]*100:.1f}-{e.roc.ci[1]*100:.1f}%)')
 
     plt.ylabel('tpr')
     plt.xlabel('fpr')
     plt.grid()
     plt.legend()
-    plt.savefig(os.path.join(dest, 'plot.png'))
-    plt.show()
+    plt.savefig(os.path.join(dest, f'roc{"_wpo" if wpo else "" }.png'))
+    if show:
+        plt.show()
 
 
 if __name__ == '__main__':
