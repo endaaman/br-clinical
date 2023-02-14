@@ -61,21 +61,19 @@ enhance_lymph_cols = [
     # '造影超音波/リンパ節_PI_実数',
 ]
 
-# plain_cols = plain_primary_cols + plain_lymph_cols
-# enhance_cols = enhance_primary_cols + enhance_lymph_cols
-# primary_cols = plain_primary_cols + enhance_primary_cols
-# lymhp_cols = plain_lymph_cols + enhance_lymph_cols
+COLs = [
+    plain_primary_cols,
+    enhance_primary_cols,
+    plain_lymph_cols,
+    enhance_lymph_cols,
+]
 
-COLs = {
-    'plain': {
-        'primary': plain_primary_cols,
-        'lymph': plain_lymph_cols,
-    },
-    'enhance': {
-        'primary': enhance_primary_cols,
-        'lymph': enhance_lymph_cols,
-    },
-}
+NAMEs = [
+    ['plain/primary', 'pp'],
+    ['enhance/primary', 'ep'],
+    ['plain/lymph', 'pl'],
+    ['enhance/lymph', 'el'],
+]
 
 # feature_cols = plain_cols + enhance_cols
 # cols_map =  {
@@ -141,7 +139,7 @@ def train_data(df, num_folds=5):
     models = []
 
     importances = []
-    for fold in tqdm(range(num_folds)):
+    for fold in tqdm(range(num_folds), leave=False):
         # print(f'fold {fold+1}/{num_folds}')
         df_x = df_train.drop([target_col], axis=1)
         df_y =  df_train[target_col]
@@ -186,7 +184,6 @@ def auc_ci(y_true, y_score):
     lower = AUC - 1.96*SE_AUC
     upper = AUC + 1.96*SE_AUC
     return np.clip([lower, upper], 0.0, 1.0)
-
 
 
 @dataclass
@@ -257,33 +254,25 @@ def cli():
 @cli.command()
 @option_seed
 @click.option('--dest', 'dest', default='out')
-@click.option('--plot', 'plot', default='pepl:ppl')
+@click.option('--plot', 'plot', default='1111:1010')
 @click.option('--show', 'show', is_flag=True)
 def train(seed, dest, plot, show):
-    plot = plot.split(':')
+    plot_codes = plot.split(':')
     fix_random_states(seed)
     df = load_data()
 
-    conditions = (
-        (('plain', 'enhance'), ('primary', 'lymph')),
-        (('plain', 'enhance'), ('primary', )),
-        (('plain', 'enhance'), ('lymph', )),
-        (('plain', ), ('primary', 'lymph',)),
-        (('plain', ), ('primary', )),
-        (('plain', ), ('lymph', )),
-        (('enhance', ), ('primary', 'lymph')),
-        (('enhance', ), ('primary', )),
-        (('enhance', ), ('lymph', )),
-    )
-
     experiments = []
-    for place, mode in conditions:
+
+    codes = [f'{i:04b}' for i in range(1, 16)]
+    for code in codes:
         cc = []
-        code = ''.join(p[0] for p in place) + ''.join(m[0] for m in mode)
-        label = '+'.join(place) + '/' + '+'.join(mode)
-        for p in place:
-            for m in mode:
-                cc += COLs[p][m]
+        labels = []
+        for i, bit in enumerate(code):
+            bit = int(bit)
+            if bit > 0:
+                cc += COLs[i]
+                labels.append(NAMEs[i][1])
+        label = '+'.join(labels)
 
         experiments.append(Experiment(
             code=code,
@@ -293,7 +282,7 @@ def train(seed, dest, plot, show):
             metrics=None,
         ))
 
-    for e in experiments:
+    for e in tqdm(experiments):
         e.train()
 
     os.makedirs(dest, exist_ok=True)
@@ -310,20 +299,20 @@ def train(seed, dest, plot, show):
             'sensitivity(youden)': e.metrics.scores.loc['youden', 'sensitivity'],
         }
 
+    # write scores
     df_score = pd.DataFrame(scores).transpose()
     df_score.to_excel(os.path.join(dest, 'scores.xlsx'))
 
     # write importance
     with pd.ExcelWriter(os.path.join(dest, 'importance.xlsx')) as writer:
         for e in experiments:
-            e.result.importance.to_excel(writer, sheet_name=e.label.replace('/', '|'))
-
+            e.result.importance.to_excel(writer, sheet_name=e.label)
 
     # plot
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111)
     for e in sorted(experiments, key=lambda e: -e.metrics.auc):
-        if not ('all' in plot or e.code in plot):
+        if not ('all' in plot or e.code in plot_codes):
             continue
         ax.plot(
             e.metrics.fpr, e.metrics.tpr,
@@ -334,7 +323,7 @@ def train(seed, dest, plot, show):
     ax.set_xlabel('fpr')
     plt.grid()
     plt.legend()
-    plt.savefig(os.path.join(dest, f'roc_{"_".join(plot)}.png'))
+    plt.savefig(os.path.join(dest, f'roc_{"_".join(plot_codes)}.png'))
     if show:
         plt.show()
 
