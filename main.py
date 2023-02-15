@@ -1,4 +1,5 @@
 import os
+import math
 import re
 from typing import NamedTuple
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from tqdm import tqdm
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.metrics import roc_curve, roc_auc_score, auc as calc_auc, f1_score, accuracy_score
 import lightgbm as lgb
@@ -63,22 +65,17 @@ enhance_lymph_cols = [
 
 COLs = [
     plain_primary_cols,
-    enhance_primary_cols,
     plain_lymph_cols,
+    enhance_primary_cols,
     enhance_lymph_cols,
 ]
 
 NAMEs = [
     ['plain/primary', 'pp'],
-    ['enhance/primary', 'ep'],
     ['plain/lymph', 'pl'],
+    ['enhance/primary', 'ep'],
     ['enhance/lymph', 'el'],
 ]
-
-# feature_cols = plain_cols + enhance_cols
-# cols_map =  {
-#     c:re.sub('[^A-Za-z0-9_]+', '', c) for c in feature_cols
-# }
 
 target_col = '臨床病期_N'
 
@@ -130,7 +127,7 @@ def train_model(x_train, y_train, x_valid, y_valid, fold):
     return model
 
 
-def train_data(df, num_folds=5):
+def train_data(df, num_folds=5, reduction='median'):
     df_train = df[df['test'] < 1].drop(['test'], axis=1)
     df_test = df[df['test'] > 0].drop(['test'], axis=1)
     folds = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=get_global_seed())
@@ -168,8 +165,14 @@ def train_data(df, num_folds=5):
         pred = model.predict(x, num_iteration=model.best_iteration)
         preds.append(pred)
 
-    pred = np.mean(preds, axis=0)
-    # pred = np.median(preds, axis=0)
+    match reduction:
+        case 'mean':
+            pred = np.mean(preds, axis=0)
+        case 'median':
+            pred = np.median(preds, axis=0)
+        case _:
+            raise RuntimeError(f'Invalid reduction: {reduction}')
+
     gt =  df_test[target_col].values
     return ModelResult(gt, pred, importance)
 
@@ -210,8 +213,8 @@ class Experiment:
     result: ModelResult
     metrics: ModelMetrics
 
-    def train(self):
-        self.result = train_data(self.df)
+    def train(self, **kwargs):
+        self.result = train_data(self.df, **kwargs)
         fpr, tpr, thresholds = roc_curve(self.result.gt, self.result.pred)
         auc = calc_auc(fpr, tpr)
         ci = auc_ci(self.result.gt, self.result.pred)
@@ -234,9 +237,7 @@ class Experiment:
                 'thres': thresholds[i],
             } for k, i in ii.items()
         }).transpose()
-
         self.metrics = ModelMetrics(fpr, tpr, thresholds, auc, ci, scores)
-
 
 
 
@@ -254,9 +255,10 @@ def cli():
 @cli.command()
 @option_seed
 @click.option('--dest', 'dest', default='out')
-@click.option('--plot', 'plot', default='1111:1010')
+@click.option('--plot', 'plot', default='1111:1010:1100')
 @click.option('--show', 'show', is_flag=True)
-def train(seed, dest, plot, show):
+@click.option('--reduction', 'reduction', default='median')
+def train(seed, dest, plot, show, reduction):
     plot_codes = plot.split(':')
     fix_random_states(seed)
     df = load_data()
@@ -283,7 +285,7 @@ def train(seed, dest, plot, show):
         ))
 
     for e in tqdm(experiments):
-        e.train()
+        e.train(reduction=reduction)
 
     os.makedirs(dest, exist_ok=True)
 
@@ -301,12 +303,22 @@ def train(seed, dest, plot, show):
 
     # write scores
     df_score = pd.DataFrame(scores).transpose()
-    df_score.to_excel(os.path.join(dest, 'scores.xlsx'))
+    df_score = df_score.sort_values(by='auc', ascending=False)
+    with pd.ExcelWriter(os.path.join(dest, 'scores.xlsx'), engine='xlsxwriter') as writer:
+        df_score.to_excel(writer, sheet_name='scores')
+        num_format = writer.book.add_format({'num_format': '#,##0.000'})
+        worksheet = writer.sheets['scores']
+        worksheet.set_column(0, 0, 12, None)
+        worksheet.set_column(1, 16, None, num_format)
 
     # write importance
-    with pd.ExcelWriter(os.path.join(dest, 'importance.xlsx')) as writer:
-        for e in experiments:
+    with pd.ExcelWriter(os.path.join(dest, 'importance.xlsx'), engine='xlsxwriter') as writer:
+        for e in reversed(experiments):
             e.result.importance.to_excel(writer, sheet_name=e.label)
+            num_format = writer.book.add_format({'num_format': '#,##0.00'})
+            worksheet = writer.sheets[e.label]
+            worksheet.set_column(0, 0, 50, None)
+            worksheet.set_column(1, 6, None, num_format)
 
     # plot
     fig = plt.figure(figsize=(10, 8))
@@ -327,6 +339,40 @@ def train(seed, dest, plot, show):
     if show:
         plt.show()
 
+
+@cli.command()
+@option_seed
+def hist(seed):
+    df = load_data()
+
+    plt.style.use('default')
+    sns.set()
+    sns.set_style('whitegrid')
+    sns.set_palette('Set1')
+    np.random.seed(2018)
+
+    col = '非造影超音波/リンパ節_lymphsize_短径'
+    data = df[col]
+    x0 = data[~df[target_col]]
+    x1 = data[df[target_col]]
+
+    # sturges
+    num_bins = math.ceil(math.log2(len(data) * 2))
+    # num_bins = 17
+    x_max = data.max()
+    x_min = data.min()
+    num_bins = np.linspace(x_min, x_max, num_bins)
+
+    fig = plt.figure()
+    ax = fig.add_subplot(1, 1, 1)
+    ax.hist([x1, x0], bins=num_bins, alpha=0.6, stacked=True)
+    # ax.hist(x0, bins=num_bins, alpha=0.6)
+    # ax.hist(x1, bins=num_bins, alpha=0.6)
+    ax.set_xlabel('Lymph node short diameter')
+    ax.set_xticks(np.arange(0, 18, 2))
+    ax.set_xlim(0, 18)
+
+    plt.show()
 
 if __name__ == '__main__':
     cli()
