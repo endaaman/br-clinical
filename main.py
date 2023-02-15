@@ -19,6 +19,8 @@ import lightgbm as lgb
 from endaaman import Timer
 from endaaman.torch import fix_random_states, get_global_seed
 
+def sigmoid(a):
+    return 1 / (1 + math.e**-a)
 
 plain_primary_cols = [
     '非造影超音波/原発巣_BIRADS',
@@ -347,6 +349,7 @@ def gbm(seed, dest, plot, show, reduction):
 @click.option('--dest', 'dest', default='out')
 @click.option('--show', 'show', is_flag=True)
 def lr(seed, dest, show):
+    fix_random_states(seed)
     df = load_data()
 
     lr_cols = {
@@ -368,18 +371,22 @@ def lr(seed, dest, show):
     test_x = df_test.drop(['N'], axis=1)
     test_y = df_test['N']
 
-    lr = LogisticRegression()
+    lr = LogisticRegression(random_state=seed)
     lr.fit(train_x, train_y)
 
     pred = lr.predict_proba(test_x)[:, 1]
-    print(pred)
+    print('test_x', test_x.values[0])
+    print('pred', pred[0])
 
     result = Result(test_y, pred)
     with open('out/lr.pickle', 'wb') as f:
         pickle.dump(result, f)
 
-    print(calc_metrics(test_y, pred))
+    m = calc_metrics(test_y, pred)
 
+    print('auc', m.auc)
+    print('coef', lr.coef_)
+    print('intercept', lr.intercept_)
 
 @cli.command()
 @click.option('--mode', 'mode', default='enhance')
