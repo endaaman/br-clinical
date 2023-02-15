@@ -3,6 +3,7 @@ import math
 import re
 from typing import NamedTuple
 from dataclasses import dataclass
+import pickle
 
 import click
 from tqdm import tqdm
@@ -11,7 +12,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import StratifiedKFold, train_test_split
-from sklearn.metrics import roc_curve, roc_auc_score, auc as calc_auc, f1_score, accuracy_score
+from sklearn.linear_model import LogisticRegression
+import sklearn.metrics as skmtrics
 import lightgbm as lgb
 
 from endaaman import Timer
@@ -96,9 +98,9 @@ def load_data():
     df.loc[df_test.index, 'test'] = 1
     return df
 
-def train_model(x_train, y_train, x_valid, y_valid, fold):
-    train_data = lgb.Dataset(x_train, label=y_train, categorical_feature=[])
-    valid_sets = [train_data]
+def train_model(x_train, y_train, x_valid, y_valid):
+    train_set = lgb.Dataset(x_train, label=y_train, categorical_feature=[])
+    valid_sets = [train_set]
     if np.any(x_valid):
         valid_data = lgb.Dataset(x_valid, label=y_valid, categorical_feature=[])
         valid_sets += [valid_data]
@@ -114,7 +116,7 @@ def train_model(x_train, y_train, x_valid, y_valid, fold):
             'metric': 'auc',
             'verbosity': -1,
         },
-        train_set=train_data,
+        train_set=train_set,
         num_boost_round=10000,
         valid_sets=valid_sets,
         # early_stopping_rounds=150,
@@ -127,7 +129,7 @@ def train_model(x_train, y_train, x_valid, y_valid, fold):
     return model
 
 
-def train_data(df, num_folds=5, reduction='median'):
+def train_gbm(df, num_folds=5, reduction='median'):
     df_train = df[df['test'] < 1].drop(['test'], axis=1)
     df_test = df[df['test'] > 0].drop(['test'], axis=1)
     folds = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=get_global_seed())
@@ -147,7 +149,7 @@ def train_data(df, num_folds=5, reduction='median'):
             df_y.iloc[folds[fold][1]].values, # y_valid
         ]
         vv = [v.copy() for v in vv]
-        model = train_model(*vv, fold)
+        model = train_model(*vv)
         models.append(model)
 
         importances.append(model.feature_importance(importance_type='gain'))
@@ -174,11 +176,10 @@ def train_data(df, num_folds=5, reduction='median'):
             raise RuntimeError(f'Invalid reduction: {reduction}')
 
     gt =  df_test[target_col].values
-    return ModelResult(gt, pred, importance)
-
+    return Result(gt, pred), importance
 
 def auc_ci(y_true, y_score):
-    AUC = roc_auc_score(y_true, y_score)
+    AUC = skmtrics.roc_auc_score(y_true, y_score)
     N1 = sum(y_true > 0)
     N2 = sum(y_true < 1)
     Q1 = AUC / (2 - AUC)
@@ -188,15 +189,39 @@ def auc_ci(y_true, y_score):
     upper = AUC + 1.96*SE_AUC
     return np.clip([lower, upper], 0.0, 1.0)
 
+def calc_metrics(gt, pred):
+    fpr, tpr, thresholds = skmtrics.roc_curve(gt, pred)
+    auc = skmtrics.auc(fpr, tpr)
+    ci = auc_ci(gt, pred)
+
+    ii = {}
+    f1_scores = [skmtrics.f1_score(gt, pred > t) for t in thresholds]
+    acc_scores = [skmtrics.accuracy_score(gt, pred > t) for t in thresholds]
+
+    ii['f1'] = np.argmax(f1_scores)
+    ii['acc'] = np.argmax(acc_scores)
+    ii['youden'] = np.argmax(tpr - fpr)
+    ii['top-left'] = np.argmin((- tpr + 1) ** 2 + fpr ** 2)
+
+    scores = pd.DataFrame({
+        k: {
+            'acc': acc_scores[i],
+            'f1': f1_scores[i],
+            'recall': tpr[i],
+            'sensitivity': -fpr[i]+1,
+            'thres': thresholds[i],
+        } for k, i in ii.items()
+    }).transpose()
+    return Metrics(fpr, tpr, thresholds, auc, ci, scores)
+
 
 @dataclass
-class ModelResult:
+class Result:
     gt: np.ndarray
     pred: np.ndarray
-    importance: pd.DataFrame
 
 @dataclass
-class ModelMetrics:
+class Metrics:
     fpr: np.ndarray
     tpr: np.ndarray
     thresholds: np.ndarray
@@ -205,40 +230,17 @@ class ModelMetrics:
     scores: pd.DataFrame
 
 @dataclass
-class Experiment:
+class GBMExperiment:
     code: str
     label: str
     df: pd.DataFrame
-
-    result: ModelResult
-    metrics: ModelMetrics
+    result: Result
+    importance: pd.DataFrame
+    metrics: Metrics
 
     def train(self, **kwargs):
-        self.result = train_data(self.df, **kwargs)
-        fpr, tpr, thresholds = roc_curve(self.result.gt, self.result.pred)
-        auc = calc_auc(fpr, tpr)
-        ci = auc_ci(self.result.gt, self.result.pred)
-
-        ii = {}
-        f1_scores = [f1_score(self.result.gt, self.result.pred > t) for t in thresholds]
-        acc_scores = [accuracy_score(self.result.gt, self.result.pred > t) for t in thresholds]
-
-        ii['f1'] = np.argmax(f1_scores)
-        ii['acc'] = np.argmax(acc_scores)
-        ii['youden'] = np.argmax(tpr - fpr)
-        ii['top-left'] = np.argmin((- tpr + 1) ** 2 + fpr ** 2)
-
-        scores = pd.DataFrame({
-            k: {
-                'acc': acc_scores[i],
-                'f1': f1_scores[i],
-                'recall': tpr[i],
-                'sensitivity': -fpr[i]+1,
-                'thres': thresholds[i],
-            } for k, i in ii.items()
-        }).transpose()
-        self.metrics = ModelMetrics(fpr, tpr, thresholds, auc, ci, scores)
-
+        self.result, self.importance = train_gbm(self.df, **kwargs)
+        self.metrics = calc_metrics(self.result.gt, self.result.pred)
 
 
 option_seed = click.option(
@@ -255,10 +257,10 @@ def cli():
 @cli.command()
 @option_seed
 @click.option('--dest', 'dest', default='out')
-@click.option('--plot', 'plot', default='1111:1010:1100')
+@click.option('--plot', 'plot', default='1111:1010:1100:1000')
 @click.option('--show', 'show', is_flag=True)
 @click.option('--reduction', 'reduction', default='median')
-def train(seed, dest, plot, show, reduction):
+def gbm(seed, dest, plot, show, reduction):
     plot_codes = plot.split(':')
     fix_random_states(seed)
     df = load_data()
@@ -276,12 +278,13 @@ def train(seed, dest, plot, show, reduction):
                 labels.append(NAMEs[i][1])
         label = '+'.join(labels)
 
-        experiments.append(Experiment(
+        experiments.append(GBMExperiment(
             code=code,
             label=label,
             df=df[cc + [target_col, 'test']],
             result=None,
             metrics=None,
+            importance=None,
         ))
 
     for e in tqdm(experiments):
@@ -314,7 +317,7 @@ def train(seed, dest, plot, show, reduction):
     # write importance
     with pd.ExcelWriter(os.path.join(dest, 'importance.xlsx'), engine='xlsxwriter') as writer:
         for e in reversed(experiments):
-            e.result.importance.to_excel(writer, sheet_name=e.label)
+            e.importance.to_excel(writer, sheet_name=e.label)
             num_format = writer.book.add_format({'num_format': '#,##0.00'})
             worksheet = writer.sheets[e.label]
             worksheet.set_column(0, 0, 50, None)
@@ -339,11 +342,49 @@ def train(seed, dest, plot, show, reduction):
     if show:
         plt.show()
 
-
 @cli.command()
 @option_seed
-def hist(seed):
+@click.option('--dest', 'dest', default='out')
+@click.option('--show', 'show', is_flag=True)
+def lr(seed, dest, show):
     df = load_data()
+
+    lr_cols = {
+        '造影超音波/リンパ節_B_1': 'b1',
+        '造影超音波/リンパ節_B_2': 'b2',
+        '造影超音波/リンパ節_lymphsize_短径': 'el_short',
+        '非造影超音波/リンパ節_lymphsize_短径': 'pl_short',
+        target_col: 'N',
+        'test': 'test',
+    }
+
+    df = df[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
+
+    df_train = df[df['test'] < 1].drop(['test'], axis=1)
+    df_test = df[df['test'] > 0].drop(['test'], axis=1)
+
+    train_x = df_train.drop(['N'], axis=1)
+    train_y = df_train['N']
+    test_x = df_test.drop(['N'], axis=1)
+    test_y = df_test['N']
+
+    lr = LogisticRegression()
+    lr.fit(train_x, train_y)
+
+    pred = lr.predict_proba(test_x)[:, 1]
+    print(pred)
+
+    result = Result(test_y, pred)
+    with open('out/lr.pickle', 'wb') as f:
+        pickle.dump(result, f)
+
+    print(calc_metrics(test_y, pred))
+
+
+@cli.command()
+@click.option('--mode', 'mode', default='enhance')
+def hist(mode):
+    df_all = load_data()
 
     plt.style.use('default')
     sns.set()
@@ -351,27 +392,59 @@ def hist(seed):
     sns.set_palette('Set1')
     np.random.seed(2018)
 
-    col = '非造影超音波/リンパ節_lymphsize_短径'
-    data = df[col]
-    x0 = data[~df[target_col]]
-    x1 = data[df[target_col]]
+    if mode == 'enhance':
+        col = '造影超音波/リンパ節_lymphsize_短径'
+    elif mode == 'plain':
+        col = '非造影超音波/リンパ節_lymphsize_短径'
+    else:
+        raise RuntimeError(f'Invalid mode: {mode}')
+    df = df_all[col]
+    x0 = df[~df[target_col]]
+    x1 = df[df[target_col]]
 
     # sturges
-    num_bins = math.ceil(math.log2(len(data) * 2))
+    num_bins = math.ceil(math.log2(len(df) * 2))
     # num_bins = 17
-    x_max = data.max()
-    x_min = data.min()
+    x_max = df.max()
+    x_min = df.min()
     num_bins = np.linspace(x_min, x_max, num_bins)
 
     fig = plt.figure()
     ax = fig.add_subplot(1, 1, 1)
+    ax.set_title(f'Lymph node short diameter ({mode})')
     ax.hist([x1, x0], bins=num_bins, alpha=0.6, stacked=True)
     # ax.hist(x0, bins=num_bins, alpha=0.6)
     # ax.hist(x1, bins=num_bins, alpha=0.6)
-    ax.set_xlabel('Lymph node short diameter')
     ax.set_xticks(np.arange(0, 18, 2))
     ax.set_xlim(0, 18)
 
+    plt.savefig(f'out/hist_lymph_{mode}.png')
+    plt.show()
+
+
+@cli.command()
+def cm():
+    df_all = load_data()
+
+    cols = {
+        '造影超音波/リンパ節_B_1': 'b1',
+        '造影超音波/リンパ節_B_2': 'b2',
+        '造影超音波/リンパ節_B_3': 'b3',
+        '造影超音波/リンパ節_B_4': 'b4',
+        '造影超音波/リンパ節_B_5': 'b5',
+        '造影超音波/リンパ節_B_6': 'b6',
+        '造影超音波/リンパ節_lymphsize_短径': 'el_short',
+        '非造影超音波/リンパ節_lymphsize_短径': 'pl_short',
+        target_col: 'N',
+    }
+
+    df = df_all[list(cols.keys())].dropna().rename(columns=cols)
+
+    plt.figure(figsize=(12, 9))
+    ax = sns.heatmap(df.corr(), vmax=1, vmin=-1, center=0, annot=True)
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=40)
+    plt.subplots_adjust(bottom=0.15, left=0.2)
+    plt.savefig('out/corr.png')
     plt.show()
 
 if __name__ == '__main__':
