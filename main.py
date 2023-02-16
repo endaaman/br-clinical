@@ -3,7 +3,9 @@ import math
 import re
 from typing import NamedTuple
 from dataclasses import dataclass
+from collections import OrderedDict
 import pickle
+from glob import glob
 
 import click
 from tqdm import tqdm
@@ -19,8 +21,18 @@ import lightgbm as lgb
 from endaaman import Timer
 from endaaman.torch import fix_random_states, get_global_seed
 
+
+
+sns.set(style='whitegrid')
+
 def sigmoid(a):
     return 1 / (1 + math.e**-a)
+
+def odds(p):
+    return p / (1 - p)
+
+def logit(p):
+    return np.log(odds(p))
 
 plain_primary_cols = [
     '非造影超音波/原発巣_BIRADS',
@@ -81,6 +93,42 @@ NAMEs = [
     ['enhance/lymph', 'el'],
 ]
 
+def gen_code_maps():
+    codes = [f'{i:04b}' for i in range(1, 16)]
+    cc = []
+    for code in codes:
+        cols = []
+        names = []
+        for i, bit in enumerate(code):
+            bit = int(bit)
+            if bit > 0:
+                cols += COLs[i]
+                names.append(NAMEs[i][1])
+        label = '+'.join(names)
+        cc.append([code, (label, cols)])
+    return OrderedDict(cc)
+
+CODE_MAP = gen_code_maps()
+
+def is_code(s):
+    return re.match('^[01]{4}$', s)
+
+def code_to_label(code):
+    if is_code(code):
+        return CODE_MAP[code][0]
+    return code.upper()
+
+def codes_to_packed(codes):
+    nn = []
+    for c in codes:
+        if is_code(c):
+            nn.append(f'{int(c, 2):1X}')
+        else:
+            nn.append(c)
+    return ''.join(nn)
+
+
+
 target_col = '臨床病期_N'
 
 def load_data():
@@ -95,9 +143,9 @@ def load_data():
     df = df.dropna(subset=[target_col])
     df[target_col] = df[target_col] > 0
 
-    df['test'] = 0
+    df['test'] = False
     __df_train, df_test = train_test_split(df, shuffle=True, stratify=df[target_col])
-    df.loc[df_test.index, 'test'] = 1
+    df.loc[df_test.index, 'test'] = True
     return df
 
 def train_model(x_train, y_train, x_valid, y_valid):
@@ -232,17 +280,33 @@ class Metrics:
     scores: pd.DataFrame
 
 @dataclass
-class GBMExperiment:
+class Experiment:
     code: str
     label: str
-    df: pd.DataFrame
     result: Result
-    importance: pd.DataFrame
     metrics: Metrics
 
-    def train(self, **kwargs):
-        self.result, self.importance = train_gbm(self.df, **kwargs)
-        self.metrics = calc_metrics(self.result.gt, self.result.pred)
+@dataclass
+class GBMExperiment(Experiment):
+    importance: pd.DataFrame
+
+
+def load_experiments(paths):
+    ee = []
+    for path in paths:
+        if not os.path.exists(path):
+            raise RuntimeError(f'{path} does not exist.')
+        with open(path, mode='rb') as f:
+            r = pickle.load(f)
+        m = calc_metrics(r.gt, r.pred)
+        code = os.path.splitext(os.path.basename(path))[0]
+        ee.append(Experiment(
+            code=code,
+            label=code_to_label(code),
+            result=r,
+            metrics=m,
+        ))
+    return ee
 
 
 option_seed = click.option(
@@ -259,62 +323,31 @@ def cli():
 @cli.command()
 @option_seed
 @click.option('--dest', 'dest', default='out')
-@click.option('--plot', 'plot', default='1111:1010:1100:1000')
+@click.option('--plot', 'codes_to_plot', default='1111:1010:1100:1000')
 @click.option('--show', 'show', is_flag=True)
 @click.option('--reduction', 'reduction', default='median')
-def gbm(seed, dest, plot, show, reduction):
-    plot_codes = plot.split(':')
+def gbm(seed, dest, codes_to_plot, show, reduction):
+    codes_to_plot = sorted(codes_to_plot.split(':'))
     fix_random_states(seed)
-    df = load_data()
+    df_all = load_data()
+
+    os.makedirs(os.path.join(dest, 'results'), exist_ok=True)
 
     experiments = []
-
-    codes = [f'{i:04b}' for i in range(1, 16)]
-    for code in codes:
-        cc = []
-        labels = []
-        for i, bit in enumerate(code):
-            bit = int(bit)
-            if bit > 0:
-                cc += COLs[i]
-                labels.append(NAMEs[i][1])
-        label = '+'.join(labels)
+    for code, (label, cols) in tqdm(CODE_MAP.items()):
+        df = df_all[cols + [target_col, 'test']]
+        result, importance = train_gbm(df, reduction=reduction)
+        with open(os.path.join(dest, 'results', f'{code}.pickle'), 'wb') as f:
+            pickle.dump(result, f)
+        metrics = calc_metrics(result.gt, result.pred)
 
         experiments.append(GBMExperiment(
-            code=code,
             label=label,
-            df=df[cc + [target_col, 'test']],
-            result=None,
-            metrics=None,
-            importance=None,
+            result=result,
+            metrics=metrics,
+            code=code,
+            importance=importance,
         ))
-
-    for e in tqdm(experiments):
-        e.train(reduction=reduction)
-
-    os.makedirs(dest, exist_ok=True)
-
-    # write scores
-    scores = {}
-    for e in experiments:
-        scores[e.label] = {
-            'auc': e.metrics.auc,
-            'auc_lower': e.metrics.ci[0],
-            'auc_upper': e.metrics.ci[1],
-            'acc': e.metrics.scores.loc['acc', 'acc'],
-            'recall(youden)': e.metrics.scores.loc['youden', 'recall'],
-            'sensitivity(youden)': e.metrics.scores.loc['youden', 'sensitivity'],
-        }
-
-    # write scores
-    df_score = pd.DataFrame(scores).transpose()
-    df_score = df_score.sort_values(by='auc', ascending=False)
-    with pd.ExcelWriter(os.path.join(dest, 'scores.xlsx'), engine='xlsxwriter') as writer:
-        df_score.to_excel(writer, sheet_name='scores')
-        num_format = writer.book.add_format({'num_format': '#,##0.000'})
-        worksheet = writer.sheets['scores']
-        worksheet.set_column(0, 0, 12, None)
-        worksheet.set_column(1, 16, None, num_format)
 
     # write importance
     with pd.ExcelWriter(os.path.join(dest, 'importance.xlsx'), engine='xlsxwriter') as writer:
@@ -325,24 +358,79 @@ def gbm(seed, dest, plot, show, reduction):
             worksheet.set_column(0, 0, 50, None)
             worksheet.set_column(1, 6, None, num_format)
 
-    # plot
+    ee_to_plot = [e for e in experiments if ('all' in codes_to_plot or e.code in codes_to_plot)]
+    _plot(ee_to_plot, dest, show)
+
+
+def _plot(ee:list[Experiment], dest:str, show:bool):
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111)
-    for e in sorted(experiments, key=lambda e: -e.metrics.auc):
-        if not ('all' in plot or e.code in plot_codes):
-            continue
+    for e in sorted(ee, key=lambda e: -e.metrics.auc):
+        m = e.metrics
         ax.plot(
-            e.metrics.fpr, e.metrics.tpr,
-            label=f'{e.label}={e.metrics.auc*100:.1f}% ({e.metrics.ci[0]*100:.1f}-{e.metrics.ci[1]*100:.1f}%)'
+            m.fpr, m.tpr,
+            label=f'{e.label}={m.auc*100:.1f}% ({m.ci[0]*100:.1f}-{m.ci[1]*100:.1f}%)'
         )
 
     ax.set_ylabel('tpr')
     ax.set_xlabel('fpr')
-    plt.grid()
     plt.legend()
-    plt.savefig(os.path.join(dest, f'roc_{"_".join(plot_codes)}.png'))
+
+    suffix = codes_to_packed([e.code for e in ee])
+    p = os.path.join(dest, f'roc_{suffix}.png')
+    print(f'wrote {p}')
+    plt.savefig(p)
     if show:
         plt.show()
+
+
+@cli.command()
+@click.option('--src', 'src', default='out/results')
+@click.option('--dest', 'dest', default='out')
+@click.option('--code', 'codes_to_plot', default='1111:1010:1100:1000')
+@click.option('--show', 'show', is_flag=True)
+def plot(src, dest, codes_to_plot, show):
+    codes_to_plot = sorted(codes_to_plot.split(':'))
+
+    if 'all' in codes_to_plot:
+        paths = glob(os.path.join(src, '*.pickle'))
+    else:
+        paths = [os.path.join(src, f'{code}.pickle') for code in codes_to_plot]
+
+    ee = load_experiments(paths)
+    _plot(ee, dest, show)
+
+
+@cli.command()
+@click.option('--src', 'src', default='out/results')
+@click.option('--dest', 'dest', default='out')
+def scores(src, dest):
+    ee = load_experiments(glob(os.path.join(src, '*.pickle')))
+
+    # calc scores
+    scores = {}
+    for e in ee:
+        scores[e.label] = {
+            'auc': e.metrics.auc,
+            'auc_lower': e.metrics.ci[0],
+            'auc_upper': e.metrics.ci[1],
+            'acc': e.metrics.scores.loc['acc', 'acc'],
+            'threshold': e.metrics.scores.loc['youden', 'thres'],
+            'recall': e.metrics.scores.loc['youden', 'recall'],
+            'sensitivity': e.metrics.scores.loc['youden', 'sensitivity'],
+        }
+
+    # write scores
+    df_score = pd.DataFrame(scores).transpose()
+    df_score = df_score.sort_values(by='auc', ascending=False)
+    with pd.ExcelWriter(os.path.join(dest, 'scores.xlsx'), engine='xlsxwriter') as writer:
+        df_score.to_excel(writer, sheet_name='scores')
+        num_format = writer.book.add_format({'num_format': '#,##0.000'})
+        worksheet = writer.sheets['scores']
+        worksheet.set_column(0, 0, 12, None)
+        worksheet.set_column(1, 30, None, num_format)
+
+
 
 @cli.command()
 @option_seed
@@ -375,29 +463,31 @@ def lr(seed, dest, show):
     lr.fit(train_x, train_y)
 
     pred = lr.predict_proba(test_x)[:, 1]
-    print('test_x', test_x.values[0])
-    print('pred', pred[0])
 
-    result = Result(test_y, pred)
-    with open('out/lr.pickle', 'wb') as f:
-        pickle.dump(result, f)
-
-    m = calc_metrics(test_y, pred)
-
-    print('auc', m.auc)
     print('coef', lr.coef_)
     print('intercept', lr.intercept_)
+
+    print('test_x', test_x.values[0])
+    print('pred', pred[0])
+    print('pred(calc)', sigmoid((test_x.values[0] * lr.coef_).sum() + lr.intercept_))
+
+    result = Result(test_y, pred)
+    os.makedirs(os.path.join(dest, 'results'), exist_ok=True)
+    with open(os.path.join(dest, 'results', 'lr.pickle'), 'wb') as f:
+        pickle.dump(result, f)
+
+    params = [np.concatenate([lr.coef_[0], lr.intercept_])]
+    columns = list(lr_cols.values())[:4] + ['intercept']
+
+    pd.DataFrame(
+        columns=columns,
+        data=params
+    ).to_excel('out/lr.xlsx')
 
 @cli.command()
 @click.option('--mode', 'mode', default='enhance')
 def hist(mode):
     df_all = load_data()
-
-    plt.style.use('default')
-    sns.set()
-    sns.set_style('whitegrid')
-    sns.set_palette('Set1')
-    np.random.seed(2018)
 
     if mode == 'enhance':
         col = '造影超音波/リンパ節_lymphsize_短径'
@@ -406,8 +496,8 @@ def hist(mode):
     else:
         raise RuntimeError(f'Invalid mode: {mode}')
     df = df_all[col]
-    x0 = df[~df[target_col]]
-    x1 = df[df[target_col]]
+    x0 = df[~df_all[target_col]]
+    x1 = df[df_all[target_col]]
 
     # sturges
     num_bins = math.ceil(math.log2(len(df) * 2))
@@ -415,6 +505,7 @@ def hist(mode):
     x_max = df.max()
     x_min = df.min()
     num_bins = np.linspace(x_min, x_max, num_bins)
+
 
     fig = plt.figure()
     ax = fig.add_subplot(1, 1, 1)
@@ -430,7 +521,7 @@ def hist(mode):
 
 
 @cli.command()
-def cm():
+def corr():
     df_all = load_data()
 
     cols = {
