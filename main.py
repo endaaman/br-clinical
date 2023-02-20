@@ -15,10 +15,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.linear_model import LogisticRegression
-import sklearn.metrics as skmtrics
+import sklearn.metrics as skmetrics
 import lightgbm as lgb
 
-from endaaman import Timer
+from endaaman import Timer, with_wrote
 from endaaman.torch import fix_random_states, get_global_seed
 
 
@@ -118,7 +118,7 @@ def code_to_label(code):
         return CODE_MAP[code][0]
     return code.upper()
 
-def codes_to_packed(codes):
+def codes_to_hex(codes):
     nn = []
     for c in codes:
         if is_code(c):
@@ -229,9 +229,10 @@ def train_gbm(df, num_folds=5, reduction='median'):
     return Result(gt, pred), importance
 
 def auc_ci(y_true, y_score):
-    AUC = skmtrics.roc_auc_score(y_true, y_score)
-    N1 = sum(y_true > 0)
-    N2 = sum(y_true < 1)
+    y_true = y_true.astype(bool)
+    AUC = skmetrics.roc_auc_score(y_true, y_score)
+    N1 = sum(y_true)
+    N2 = sum(~y_true)
     Q1 = AUC / (2 - AUC)
     Q2 = 2*AUC**2 / (1 + AUC)
     SE_AUC = np.sqrt((AUC*(1 - AUC) + (N1 - 1)*(Q1 - AUC**2) + (N2 - 1)*(Q2 - AUC**2)) / (N1*N2))
@@ -240,13 +241,13 @@ def auc_ci(y_true, y_score):
     return np.clip([lower, upper], 0.0, 1.0)
 
 def calc_metrics(gt, pred):
-    fpr, tpr, thresholds = skmtrics.roc_curve(gt, pred)
-    auc = skmtrics.auc(fpr, tpr)
+    fpr, tpr, thresholds = skmetrics.roc_curve(gt, pred)
+    auc = skmetrics.auc(fpr, tpr)
     ci = auc_ci(gt, pred)
 
     ii = {}
-    f1_scores = [skmtrics.f1_score(gt, pred > t) for t in thresholds]
-    acc_scores = [skmtrics.accuracy_score(gt, pred > t) for t in thresholds]
+    f1_scores = [skmetrics.f1_score(gt, pred > t) for t in thresholds]
+    acc_scores = [skmetrics.accuracy_score(gt, pred > t) for t in thresholds]
 
     ii['f1'] = np.argmax(f1_scores)
     ii['acc'] = np.argmax(acc_scores)
@@ -376,7 +377,7 @@ def _plot(ee:list[Experiment], dest:str, show:bool):
     ax.set_xlabel('fpr')
     plt.legend()
 
-    suffix = codes_to_packed([e.code for e in ee])
+    suffix = codes_to_hex([e.code for e in ee])
     p = os.path.join(dest, f'roc_{suffix}.png')
     print(f'wrote {p}')
     plt.savefig(p)
@@ -414,8 +415,8 @@ def scores(src, dest):
             'auc': e.metrics.auc,
             'auc_lower': e.metrics.ci[0],
             'auc_upper': e.metrics.ci[1],
-            'acc': e.metrics.scores.loc['acc', 'acc'],
             'threshold': e.metrics.scores.loc['youden', 'thres'],
+            'acc': e.metrics.scores.loc['youden', 'acc'],
             'recall': e.metrics.scores.loc['youden', 'recall'],
             'sensitivity': e.metrics.scores.loc['youden', 'sensitivity'],
         }
@@ -510,13 +511,14 @@ def hist(mode):
     fig = plt.figure()
     ax = fig.add_subplot(1, 1, 1)
     ax.set_title(f'Lymph node short diameter ({mode})')
-    ax.hist([x1, x0], bins=num_bins, alpha=0.6, stacked=True)
+    ax.hist([x1, x0], label=['N>0', 'N=0'], bins=num_bins, alpha=0.6, stacked=True)
     # ax.hist(x0, bins=num_bins, alpha=0.6)
     # ax.hist(x1, bins=num_bins, alpha=0.6)
+    ax.legend()
     ax.set_xticks(np.arange(0, 18, 2))
     ax.set_xlim(0, 18)
 
-    plt.savefig(f'out/hist_lymph_{mode}.png')
+    plt.savefig(with_wrote(f'out/hist_lymph_{mode}.png'))
     plt.show()
 
 
