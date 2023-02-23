@@ -34,6 +34,7 @@ def odds(p):
 def logit(p):
     return np.log(odds(p))
 
+
 plain_primary_cols = [
     '非造影超音波/原発巣_BIRADS',
     '非造影超音波/原発巣_lesion(0,1)',
@@ -44,13 +45,6 @@ plain_primary_cols = [
     '非造影超音波/原発巣_乳管内進展(mm)_最大径(長径)',
     '非造影超音波/原発巣_乳管内進展(mm)_短径',
     '非造影超音波/原発巣_乳管内進展(mm)_第3軸径',
-]
-
-plain_lymph_cols = [
-    *[f'非造影超音波/リンパ節_term_{i}' for i in range(1, 9)],
-    '非造影超音波/リンパ節_mass(0,1)',
-    '非造影超音波/リンパ節_lymphsize_最大径(長径)',
-    '非造影超音波/リンパ節_lymphsize_短径',
 ]
 
 enhance_primary_cols = [
@@ -67,30 +61,38 @@ enhance_primary_cols = [
     '造影超音波/原発巣_乳管内進展(mm)_第3軸径',
 ]
 
+plain_lymph_cols = [
+    *[f'非造影超音波/リンパ節_term_{i}' for i in range(1, 9)],
+    '非造影超音波/リンパ節_mass(0,1)',
+    '非造影超音波/リンパ節_lymphsize_最大径(長径)',
+    col_pl_short:='非造影超音波/リンパ節_lymphsize_短径',
+]
+
 enhance_lymph_cols = [
     '造影超音波/リンパ節_TIC_動脈層',
     '造影超音波/リンパ節_TIC_静脈層',
     '造影超音波/リンパ節_mass(0,1)',
     '造影超音波/リンパ節_lymphsize_最大径(長径)',
-    '造影超音波/リンパ節_lymphsize_短径',
+    col_el_short:='造影超音波/リンパ節_lymphsize_短径',
+    # col_pl_lt_el:='el short < el short',
     *[f'造影超音波/リンパ節_term_{i}' for i in range(1, 9)],
     *[f'造影超音波/リンパ節_B_{i}' for i in range(1, 6)],
+    # col_pl_lt_el,
     # '造影超音波/リンパ節_PI_7',
     # '造影超音波/リンパ節_PI_実数',
 ]
 
-COLs = [
-    plain_primary_cols,
-    plain_lymph_cols,
-    enhance_primary_cols,
-    enhance_lymph_cols,
-]
+@dataclass
+class Condition:
+    cols: list[str]
+    long_name: str
+    short_name: str
 
-NAMEs = [
-    ['plain/primary', 'pp'],
-    ['plain/lymph', 'pl'],
-    ['enhance/primary', 'ep'],
-    ['enhance/lymph', 'el'],
+COLUMN_CONDITIONS = [
+    Condition(plain_primary_cols, 'plain/primary', 'pp'),
+    Condition(plain_lymph_cols, 'plain/lymph', 'pl'),
+    Condition(enhance_primary_cols, 'enhance/primary', 'ep'),
+    Condition(enhance_lymph_cols, 'enhance/lymph', 'el'),
 ]
 
 def gen_code_maps():
@@ -102,8 +104,9 @@ def gen_code_maps():
         for i, bit in enumerate(code):
             bit = int(bit)
             if bit > 0:
-                cols += COLs[i]
-                names.append(NAMEs[i][1])
+                c = COLUMN_CONDITIONS[i]
+                cols += c.cols
+                names.append(c.short_name)
         label = '+'.join(names)
         cc.append([code, (label, cols)])
     return OrderedDict(cc)
@@ -132,7 +135,7 @@ def codes_to_hex(codes):
 target_col = '臨床病期_N'
 
 def load_data():
-    df = pd.read_excel('data/clinical_data_20230212.xlsx', header=[0, 1, 2])
+    df = pd.read_excel('data/clinical_data_20230223.xlsx', header=[0, 1, 2])
     df.columns = [
         '_'.join([
             str(s).replace('\n', '').replace(' ', '')
@@ -146,9 +149,12 @@ def load_data():
     df['test'] = False
     __df_train, df_test = train_test_split(df, shuffle=True, stratify=df[target_col])
     df.loc[df_test.index, 'test'] = True
+
+    # df[col_pl_lt_el] = df[col_pl_short] < df[col_el_short]
     return df
 
-def train_model(x_train, y_train, x_valid, y_valid):
+
+def train_single_gbm(x_train, y_train, x_valid, y_valid):
     train_set = lgb.Dataset(x_train, label=y_train, categorical_feature=[])
     valid_sets = [train_set]
     if np.any(x_valid):
@@ -199,7 +205,7 @@ def train_gbm(df, num_folds=5, reduction='median'):
             df_y.iloc[folds[fold][1]].values, # y_valid
         ]
         vv = [v.copy() for v in vv]
-        model = train_model(*vv)
+        model = train_single_gbm(*vv)
         models.append(model)
 
         importances.append(model.feature_importance(importance_type='gain'))
@@ -280,6 +286,10 @@ class Metrics:
     ci: np.ndarray
     scores: pd.DataFrame
 
+    @classmethod
+    def from_result(cls, r):
+        return calc_metrics(r.gt, r.pred)
+
 @dataclass
 class Experiment:
     code: str
@@ -299,7 +309,7 @@ def load_experiments(paths):
             raise RuntimeError(f'{path} does not exist.')
         with open(path, mode='rb') as f:
             r = pickle.load(f)
-        m = calc_metrics(r.gt, r.pred)
+        m = Metrics.from_result(r)
         code = os.path.splitext(os.path.basename(path))[0]
         ee.append(Experiment(
             code=code,
@@ -340,7 +350,7 @@ def gbm(seed, dest, codes_to_plot, show, reduction):
         result, importance = train_gbm(df, reduction=reduction)
         with open(os.path.join(dest, 'results', f'{code}.pickle'), 'wb') as f:
             pickle.dump(result, f)
-        metrics = calc_metrics(result.gt, result.pred)
+        metrics = Metrics.from_result(result)
 
         experiments.append(GBMExperiment(
             label=label,
@@ -444,8 +454,8 @@ def lr(seed, dest, show):
     lr_cols = {
         '造影超音波/リンパ節_B_1': 'b1',
         '造影超音波/リンパ節_B_2': 'b2',
-        '造影超音波/リンパ節_lymphsize_短径': 'el_short',
         '非造影超音波/リンパ節_lymphsize_短径': 'pl_short',
+        '造影超音波/リンパ節_lymphsize_短径': 'el_short',
         target_col: 'N',
         'test': 'test',
     }
@@ -465,25 +475,50 @@ def lr(seed, dest, show):
 
     pred = lr.predict_proba(test_x)[:, 1]
 
-    print('coef', lr.coef_)
-    print('intercept', lr.intercept_)
-
-    print('test_x', test_x.values[0])
-    print('pred', pred[0])
-    print('pred(calc)', sigmoid((test_x.values[0] * lr.coef_).sum() + lr.intercept_))
+    coef = lr.coef_[0]
+    intercept = lr.intercept_[0]
 
     result = Result(test_y, pred)
     os.makedirs(os.path.join(dest, 'results'), exist_ok=True)
     with open(os.path.join(dest, 'results', 'lr.pickle'), 'wb') as f:
         pickle.dump(result, f)
 
-    params = [np.concatenate([lr.coef_[0], lr.intercept_])]
-    columns = list(lr_cols.values())[:4] + ['intercept']
+    metrics = Metrics.from_result(result)
+    thres = metrics.scores.loc['acc', 'thres']
+    intercept2 = thres - intercept - coef[0] - coef[1]
 
-    pd.DataFrame(
-        columns=columns,
-        data=params
-    ).to_excel('out/lr.xlsx')
+    print('coef=', coef)
+    print('intercept=', intercept)
+    print('thres=', thres)
+
+    # target: b1=b2=True
+    coef2 = coef[[2,3]]
+    mini = np.min(coef2)
+    coef2 = coef2 / mini
+    intercept2 = intercept2 / mini
+
+    print('coef2', coef2)
+    print('intercept2', intercept2)
+
+    df2 = df[(df['b1']>0) & (df['b2']>0)].copy()
+    pred = df['pl_short'] * coef2[0] + df['el_short'] * coef2[0]
+    print(pred)
+    df2['pred_value'] = pred
+    df2['pred'] = pred > intercept2
+
+    params = {
+        'coef_b1': coef[0],
+        'coef_b2': coef[1],
+        'coef_pl_short': coef[2],
+        'coef_el_short': coef[3],
+        'intercept': intercept,
+        'coef2_pl_short': coef2[0],
+        'coef2_el_short': coef2[1],
+        'intercept2': intercept,
+    }
+
+    pd.DataFrame.from_dict({k:[v] for k, v in params.items()}).to_excel('out/lr.xlsx')
+    df2.to_excel('out/lr_pred_b1b2.xlsx')
 
 @cli.command()
 @click.option('--mode', 'mode', default='enhance')
