@@ -19,10 +19,11 @@ import sklearn.metrics as skmetrics
 import lightgbm as lgb
 
 from endaaman import Timer, with_wrote
-from endaaman.torch import fix_random_states, get_global_seed
+from endaaman.torch import fix_random_states, get_global_seed, set_global_seed
 
 
-
+J = os.path.join
+set_global_seed(44)
 sns.set(style='whitegrid')
 
 def sigmoid(a):
@@ -134,8 +135,8 @@ def codes_to_hex(codes):
 
 target_col = '臨床病期_N'
 
-def load_data():
-    df = pd.read_excel('data/clinical_data_20230223.xlsx', header=[0, 1, 2])
+def load_data(rev):
+    df = pd.read_excel(f'data/clinical_data_{rev}.xlsx', header=[0, 1, 2])
     df.columns = [
         '_'.join([
             str(s).replace('\n', '').replace(' ', '')
@@ -171,6 +172,7 @@ def train_single_gbm(x_train, y_train, x_valid, y_valid):
             'boosting': 'gbdt',
             'metric': 'auc',
             'verbosity': -1,
+            'zero_as_missing': True,
         },
         train_set=train_set,
         num_boost_round=10000,
@@ -324,8 +326,29 @@ option_seed = click.option(
     '--seed',
     'seed',
     type=int,
-    default=42,
+    default=get_global_seed(),
 )
+option_rev = click.option(
+    '--rev',
+    'rev',
+    type=str,
+    default='20230224',
+)
+option_dest = click.option(
+    '--dest',
+    'dest',
+    type=str,
+    default=None,
+    callback=lambda ctx, param, value: value if value else f'out{ctx.params["rev"]}',
+)
+
+option_src = click.option(
+    '--src',
+    'src',
+    default=None,
+    callback=lambda ctx, param, value: value if value else J(f'out{ctx.params["rev"]}', 'results'),
+)
+
 
 @click.group()
 def cli():
@@ -333,22 +356,23 @@ def cli():
 
 @cli.command()
 @option_seed
-@click.option('--dest', 'dest', default='out')
+@option_rev
+@option_dest
 @click.option('--plot', 'codes_to_plot', default='1111:1010:1100:1000')
 @click.option('--show', 'show', is_flag=True)
 @click.option('--reduction', 'reduction', default='median')
-def gbm(seed, dest, codes_to_plot, show, reduction):
+def gbm(seed, rev, dest, codes_to_plot, show, reduction):
     codes_to_plot = sorted(codes_to_plot.split(':'))
     fix_random_states(seed)
-    df_all = load_data()
+    df_all = load_data(rev)
 
-    os.makedirs(os.path.join(dest, 'results'), exist_ok=True)
+    os.makedirs(J(dest, 'results'), exist_ok=True)
 
     experiments = []
     for code, (label, cols) in tqdm(CODE_MAP.items()):
         df = df_all[cols + [target_col, 'test']]
         result, importance = train_gbm(df, reduction=reduction)
-        with open(os.path.join(dest, 'results', f'{code}.pickle'), 'wb') as f:
+        with open(J(dest, 'results', f'{code}.pickle'), 'wb') as f:
             pickle.dump(result, f)
         metrics = Metrics.from_result(result)
 
@@ -361,7 +385,7 @@ def gbm(seed, dest, codes_to_plot, show, reduction):
         ))
 
     # write importance
-    with pd.ExcelWriter(os.path.join(dest, 'importance.xlsx'), engine='xlsxwriter') as writer:
+    with pd.ExcelWriter(J(dest, 'importance.xlsx'), engine='xlsxwriter') as writer:
         for e in reversed(experiments):
             e.importance.to_excel(writer, sheet_name=e.label)
             num_format = writer.book.add_format({'num_format': '#,##0.00'})
@@ -388,7 +412,7 @@ def _plot(ee:list[Experiment], dest:str, show:bool):
     plt.legend()
 
     suffix = codes_to_hex([e.code for e in ee])
-    p = os.path.join(dest, f'roc_{suffix}.png')
+    p = J(dest, f'roc_{suffix}.png')
     print(f'wrote {p}')
     plt.savefig(p)
     if show:
@@ -396,27 +420,29 @@ def _plot(ee:list[Experiment], dest:str, show:bool):
 
 
 @cli.command()
-@click.option('--src', 'src', default='out/results')
-@click.option('--dest', 'dest', default='out')
+@option_rev
+@option_dest
+@option_src
 @click.option('--code', 'codes_to_plot', default='1111:1010:1100:1000')
 @click.option('--show', 'show', is_flag=True)
-def plot(src, dest, codes_to_plot, show):
+def plot(rev, dest, src, codes_to_plot, show):
     codes_to_plot = sorted(codes_to_plot.split(':'))
 
     if 'all' in codes_to_plot:
-        paths = glob(os.path.join(src, '*.pickle'))
+        paths = glob(J(src, '*.pickle'))
     else:
-        paths = [os.path.join(src, f'{code}.pickle') for code in codes_to_plot]
+        paths = [J(src, f'{code}.pickle') for code in codes_to_plot]
 
     ee = load_experiments(paths)
     _plot(ee, dest, show)
 
 
 @cli.command()
-@click.option('--src', 'src', default='out/results')
-@click.option('--dest', 'dest', default='out')
-def scores(src, dest):
-    ee = load_experiments(glob(os.path.join(src, '*.pickle')))
+@option_rev
+@option_dest
+@option_src
+def scores(rev, dest, src):
+    ee = load_experiments(glob(J(src, '*.pickle')))
 
     # calc scores
     scores = {}
@@ -434,7 +460,7 @@ def scores(src, dest):
     # write scores
     df_score = pd.DataFrame(scores).transpose()
     df_score = df_score.sort_values(by='auc', ascending=False)
-    with pd.ExcelWriter(os.path.join(dest, 'scores.xlsx'), engine='xlsxwriter') as writer:
+    with pd.ExcelWriter(J(dest, 'scores.xlsx'), engine='xlsxwriter') as writer:
         df_score.to_excel(writer, sheet_name='scores')
         num_format = writer.book.add_format({'num_format': '#,##0.000'})
         worksheet = writer.sheets['scores']
@@ -445,11 +471,12 @@ def scores(src, dest):
 
 @cli.command()
 @option_seed
-@click.option('--dest', 'dest', default='out')
+@option_rev
+@option_dest
 @click.option('--show', 'show', is_flag=True)
-def lr(seed, dest, show):
+def lr(seed, rev, dest, show):
     fix_random_states(seed)
-    df = load_data()
+    df = load_data(rev)
 
     lr_cols = {
         '造影超音波/リンパ節_B_1': 'b1',
@@ -479,8 +506,8 @@ def lr(seed, dest, show):
     intercept = lr.intercept_[0]
 
     result = Result(test_y, pred)
-    os.makedirs(os.path.join(dest, 'results'), exist_ok=True)
-    with open(os.path.join(dest, 'results', 'lr.pickle'), 'wb') as f:
+    os.makedirs(J(dest, 'results'), exist_ok=True)
+    with open(J(dest, 'results', 'lr.pickle'), 'wb') as f:
         pickle.dump(result, f)
 
     metrics = Metrics.from_result(result)
@@ -517,13 +544,13 @@ def lr(seed, dest, show):
         'intercept2': intercept,
     }
 
-    pd.DataFrame.from_dict({k:[v] for k, v in params.items()}).to_excel('out/lr.xlsx')
-    df2.to_excel('out/lr_pred_b1b2.xlsx')
+    pd.DataFrame.from_dict({k:[v] for k, v in params.items()}).to_excel(J(dest, 'lr.xlsx'))
+    df2.to_excel(J(dest, 'lr_pred_b1b2.xlsx'))
 
 @cli.command()
 @click.option('--mode', 'mode', default='enhance')
 def hist(mode):
-    df_all = load_data()
+    df_all = load_data(rev)
 
     if mode == 'enhance':
         col = '造影超音波/リンパ節_lymphsize_短径'
@@ -558,8 +585,10 @@ def hist(mode):
 
 
 @cli.command()
-def corr():
-    df_all = load_data()
+@option_rev
+@option_dest
+def corr(rev, dest):
+    df_all = load_data(rev)
 
     cols = {
         '造影超音波/リンパ節_B_1': 'b1',
@@ -579,7 +608,7 @@ def corr():
     ax = sns.heatmap(df.corr(), vmax=1, vmin=-1, center=0, annot=True)
     ax.set_xticklabels(ax.get_xticklabels(), rotation=40)
     plt.subplots_adjust(bottom=0.15, left=0.2)
-    plt.savefig('out/corr.png')
+    plt.savefig(J(dest, 'corr.png'))
     plt.show()
 
 if __name__ == '__main__':
