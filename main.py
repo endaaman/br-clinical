@@ -83,6 +83,11 @@ enhance_lymph_cols = [
     # '造影超音波/リンパ節_PI_実数',
 ]
 
+
+enhance_cnn_cols = [
+    'enhance CNN prediction'
+]
+
 @dataclass
 class Condition:
     cols: list[str]
@@ -94,10 +99,12 @@ COLUMN_CONDITIONS = [
     Condition(plain_lymph_cols, 'plain/lymph', 'pl'),
     Condition(enhance_primary_cols, 'enhance/primary', 'ep'),
     Condition(enhance_lymph_cols, 'enhance/lymph', 'el'),
+    Condition(enhance_cnn_cols, 'enhance/cnn', 'ec'),
 ]
 
 def gen_code_maps():
-    codes = [f'{i:04b}' for i in range(1, 16)]
+    count = len(COLUMN_CONDITIONS)
+    codes = [f'{i:0{count}b}' for i in range(1, 2**count)]
     cc = []
     for code in codes:
         cols = []
@@ -135,7 +142,7 @@ def codes_to_hex(codes):
 
 target_col = '臨床病期_N'
 
-def load_data(rev):
+def load_data(rev, cnn_preds):
     df = pd.read_excel(f'data/clinical_data_{rev}.xlsx', header=[0, 1, 2])
     df.columns = [
         '_'.join([
@@ -151,7 +158,22 @@ def load_data(rev):
     __df_train, df_test = train_test_split(df, shuffle=True, stratify=df[target_col])
     df.loc[df_test.index, 'test'] = True
 
+    df_p = None
+    if cnn_preds:
+        df_p = pd.read_excel(cnn_preds)
+        df_p['id'] = -1
+        for idx, row in df_p.iterrows():
+            print(row)
+            m = re.match(r'^.*(\d\d\d)_\d$', row['name'])
+            if not m:
+                raise RuntimeError('Invalid row:', idx, row)
+            df_p.loc[idx, 'id'] = int(m[1])
+        df_p.loc[df_p['id'].duplicated(keep='first'), 'id'] = -1
+        df_p = df_p.set_index('id')[['pred']].rename(columns={'pred': 'enhance CNN prediction'})
+        df = df.join(df_p)
+
     # df[col_pl_lt_el] = df[col_pl_short] < df[col_el_short]
+    # df[col_el_ratio] = df[col_el_long] / df[col_el_short]
     return df
 
 
@@ -334,6 +356,12 @@ option_rev = click.option(
     type=str,
     default='20230224',
 )
+option_cnn_preds= click.option(
+    '--cnn-preds',
+    'cnn_preds',
+    type=str,
+    default=None,
+)
 option_dest = click.option(
     '--dest',
     'dest',
@@ -354,17 +382,32 @@ option_src = click.option(
 def cli():
     pass
 
+
 @cli.command()
 @option_seed
 @option_rev
+@option_cnn_preds
 @option_dest
-@click.option('--plot', 'codes_to_plot', default='1111:1010:1100:1000')
+def dump_train_test(seed, rev, cnn_preds, dest):
+    fix_random_states(seed)
+    df_all = load_data(rev, cnn_preds)
+    df = df_all.rename(columns={'研究番号': 'id'})[['id', 'test']]
+    # df['test'] = df['test'].astype('int')
+    df.to_excel(J(dest, f'train_test_{seed}_{rev}.xlsx'), index=False)
+
+
+@cli.command()
+@option_seed
+@option_rev
+@option_cnn_preds
+@option_dest
+@click.option('--plot', 'codes_to_plot', default='11110:10100:11000:10000')
 @click.option('--show', 'show', is_flag=True)
 @click.option('--reduction', 'reduction', default='median')
-def gbm(seed, rev, dest, codes_to_plot, show, reduction):
-    codes_to_plot = sorted(codes_to_plot.split(':'))
+def gbm(seed, rev, cnn_preds, dest, codes_to_plot, show, reduction):
     fix_random_states(seed)
-    df_all = load_data(rev)
+    df_all = load_data(rev, cnn_preds)
+    codes_to_plot = sorted(codes_to_plot.split(':'))
 
     os.makedirs(J(dest, 'results'), exist_ok=True)
 
@@ -421,11 +464,12 @@ def _plot(ee:list[Experiment], dest:str, show:bool):
 
 @cli.command()
 @option_rev
+@option_cnn_preds
 @option_dest
 @option_src
 @click.option('--code', 'codes_to_plot', default='1111:1010:1100:1000')
 @click.option('--show', 'show', is_flag=True)
-def plot(rev, dest, src, codes_to_plot, show):
+def plot(rev, cnn_preds, dest, src, codes_to_plot, show):
     codes_to_plot = sorted(codes_to_plot.split(':'))
 
     if 'all' in codes_to_plot:
@@ -439,9 +483,10 @@ def plot(rev, dest, src, codes_to_plot, show):
 
 @cli.command()
 @option_rev
+@option_cnn_preds
 @option_dest
 @option_src
-def scores(rev, dest, src):
+def scores(rev, cnn_preds, dest, src):
     ee = load_experiments(glob(J(src, '*.pickle')))
 
     # calc scores
@@ -472,11 +517,12 @@ def scores(rev, dest, src):
 @cli.command()
 @option_seed
 @option_rev
+@option_cnn_preds
 @option_dest
 @click.option('--show', 'show', is_flag=True)
-def lr(seed, rev, dest, show):
+def lr(seed, rev, cnn_preds, dest, show):
     fix_random_states(seed)
-    df = load_data(rev)
+    df = load_data(rev, cnn_preds)
 
     lr_cols = {
         '造影超音波/リンパ節_B_1': 'b1',
@@ -548,9 +594,11 @@ def lr(seed, rev, dest, show):
     df2.to_excel(J(dest, 'lr_pred_b1b2.xlsx'))
 
 @cli.command()
+@option_rev
+@option_cnn_preds
 @click.option('--mode', 'mode', default='enhance')
-def hist(mode):
-    df_all = load_data(rev)
+def hist(rev, cnn_preds, mode):
+    df_all = load_data(rev, cnn_preds)
 
     if mode == 'enhance':
         col = '造影超音波/リンパ節_lymphsize_短径'
@@ -586,9 +634,10 @@ def hist(mode):
 
 @cli.command()
 @option_rev
+@option_cnn_preds
 @option_dest
-def corr(rev, dest):
-    df_all = load_data(rev)
+def corr(rev, cnn_preds, dest):
+    df_all = load_data(rev, cnn_preds)
 
     cols = {
         '造影超音波/リンパ節_B_1': 'b1',
