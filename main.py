@@ -73,16 +73,17 @@ enhance_lymph_cols = [
     '造影超音波/リンパ節_TIC_動脈層',
     '造影超音波/リンパ節_TIC_静脈層',
     '造影超音波/リンパ節_mass(0,1)',
-    '造影超音波/リンパ節_lymphsize_最大径(長径)',
+    col_el_long:='造影超音波/リンパ節_lymphsize_最大径(長径)',
     col_el_short:='造影超音波/リンパ節_lymphsize_短径',
-    # col_pl_lt_el:='el short < el short',
     *[f'造影超音波/リンパ節_term_{i}' for i in range(1, 9)],
     *[f'造影超音波/リンパ節_B_{i}' for i in range(1, 6)],
-    # col_pl_lt_el,
+
+    col_pl_lt_el:='el short < el short',
+    col_el_ratio:='el long / el short',
+
     # '造影超音波/リンパ節_PI_7',
     # '造影超音波/リンパ節_PI_実数',
 ]
-
 
 enhance_cnn_cols = [
     'enhance CNN prediction'
@@ -169,11 +170,13 @@ def load_data(rev, cnn_preds):
                 raise RuntimeError('Invalid row:', idx, row)
             df_p.loc[idx, 'id'] = int(m[1])
         df_p.loc[df_p['id'].duplicated(keep='first'), 'id'] = -1
-        df_p = df_p.set_index('id')[['pred']].rename(columns={'pred': 'enhance CNN prediction'})
+        df_p = df_p.set_index('id')[['pred']].rename(columns={'pred': enhance_cnn_cols[0]})
         df = df.join(df_p)
+    else:
+        df[enhance_cnn_cols[0]] = np.nan
 
-    # df[col_pl_lt_el] = df[col_pl_short] < df[col_el_short]
-    # df[col_el_ratio] = df[col_el_long] / df[col_el_short]
+    df[col_pl_lt_el] = df[col_pl_short] < df[col_el_short]
+    df[col_el_ratio] = df[col_el_long] / df[col_el_short]
     return df
 
 
