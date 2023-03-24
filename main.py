@@ -65,7 +65,7 @@ enhance_primary_cols = [
 plain_lymph_cols = [
     *[f'非造影超音波/リンパ節_term_{i}' for i in range(1, 9)],
     '非造影超音波/リンパ節_mass(0,1)',
-    '非造影超音波/リンパ節_lymphsize_最大径(長径)',
+    col_pl_long:='非造影超音波/リンパ節_lymphsize_最大径(長径)',
     col_pl_short:='非造影超音波/リンパ節_lymphsize_短径',
 ]
 
@@ -78,15 +78,15 @@ enhance_lymph_cols = [
     *[f'造影超音波/リンパ節_term_{i}' for i in range(1, 9)],
     *[f'造影超音波/リンパ節_B_{i}' for i in range(1, 6)],
 
-    col_pl_lt_el:='el short < el short',
-    col_el_ratio:='el long / el short',
+    # col_pl_lt_el:='el short < el short',
+    # col_el_ratio:='el long / el short',
 
     # '造影超音波/リンパ節_PI_7',
     # '造影超音波/リンパ節_PI_実数',
 ]
 
-enhance_cnn_cols = [
-    'enhance CNN prediction'
+cnn_pe_preds_cols = [
+    'CNN PE prediction'
 ]
 
 @dataclass
@@ -100,7 +100,7 @@ COLUMN_CONDITIONS = [
     Condition(plain_lymph_cols, 'plain/lymph', 'pl'),
     Condition(enhance_primary_cols, 'enhance/primary', 'ep'),
     Condition(enhance_lymph_cols, 'enhance/lymph', 'el'),
-    Condition(enhance_cnn_cols, 'enhance/cnn', 'ec'),
+    Condition(cnn_pe_preds_cols, 'enhance/cnn', 'ec'),
 ]
 
 def gen_code_maps():
@@ -164,19 +164,18 @@ def load_data(rev, cnn_preds):
         df_p = pd.read_excel(cnn_preds)
         df_p['id'] = -1
         for idx, row in df_p.iterrows():
-            print(row)
             m = re.match(r'^.*(\d\d\d)_\d$', row['name'])
             if not m:
                 raise RuntimeError('Invalid row:', idx, row)
             df_p.loc[idx, 'id'] = int(m[1])
         df_p.loc[df_p['id'].duplicated(keep='first'), 'id'] = -1
-        df_p = df_p.set_index('id')[['pred']].rename(columns={'pred': enhance_cnn_cols[0]})
+        df_p = df_p.set_index('id')[['pred']].rename(columns={'pred': cnn_pe_preds_cols[0]})
         df = df.join(df_p)
     else:
-        df[enhance_cnn_cols[0]] = np.nan
+        df[cnn_pe_preds_cols[0]] = np.nan
 
-    df[col_pl_lt_el] = df[col_pl_short] < df[col_el_short]
-    df[col_el_ratio] = df[col_el_long] / df[col_el_short]
+    # df[col_pl_lt_el] = df[col_pl_short] < df[col_el_short]
+    # df[col_el_ratio] = df[col_el_long] / df[col_el_short]
     return df
 
 
@@ -649,8 +648,10 @@ def corr(rev, cnn_preds, dest):
         '造影超音波/リンパ節_B_4': 'b4',
         '造影超音波/リンパ節_B_5': 'b5',
         '造影超音波/リンパ節_B_6': 'b6',
-        '造影超音波/リンパ節_lymphsize_短径': 'el_short',
-        '非造影超音波/リンパ節_lymphsize_短径': 'pl_short',
+        col_el_short: 'el_short',
+        col_el_long: 'el_short',
+        col_pl_short: 'pl_short',
+        col_pl_long: 'pl_long',
         target_col: 'N',
     }
 
