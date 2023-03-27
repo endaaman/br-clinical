@@ -35,6 +35,8 @@ def odds(p):
 def logit(p):
     return np.log(odds(p))
 
+DEFAULT_REV = '20230224'
+
 
 plain_primary_cols = [
     '非造影超音波/原発巣_BIRADS',
@@ -85,8 +87,12 @@ enhance_lymph_cols = [
     # '造影超音波/リンパ節_PI_実数',
 ]
 
-cnn_pe_preds_cols = [
+cnn_preds_cols = [
     'CNN PE prediction'
+]
+
+cnn_features_cols = [
+    f'CNN feaure {i}' for i in range(1280)
 ]
 
 @dataclass
@@ -100,7 +106,8 @@ COLUMN_CONDITIONS = [
     Condition(plain_lymph_cols, 'plain/lymph', 'pl'),
     Condition(enhance_primary_cols, 'enhance/primary', 'ep'),
     Condition(enhance_lymph_cols, 'enhance/lymph', 'el'),
-    Condition(cnn_pe_preds_cols, 'enhance/cnn', 'ec'),
+    Condition(cnn_preds_cols, 'enhance/cnn', 'ec'),
+    Condition(cnn_features_cols, 'enhance/features', 'ef'),
 ]
 
 def gen_code_maps():
@@ -123,7 +130,7 @@ def gen_code_maps():
 CODE_MAP = gen_code_maps()
 
 def is_code(s):
-    return re.match('^[01]{4}$', s)
+    return re.match(r'^[01]{' + str(len(COLUMN_CONDITIONS)) + r'}$', s)
 
 def code_to_label(code):
     if is_code(code):
@@ -143,7 +150,7 @@ def codes_to_hex(codes):
 
 target_col = '臨床病期_N'
 
-def load_data(rev, cnn_preds):
+def load_data(rev=DEFAULT_REV, cnn_preds:str=None, cnn_features:str=None):
     df = pd.read_excel(f'data/clinical_data_{rev}.xlsx', header=[0, 1, 2])
     df.columns = [
         '_'.join([
@@ -162,17 +169,22 @@ def load_data(rev, cnn_preds):
     df_p = None
     if cnn_preds:
         df_p = pd.read_excel(cnn_preds)
-        df_p['id'] = -1
-        for idx, row in df_p.iterrows():
-            m = re.match(r'^.*(\d\d\d)_\d$', row['name'])
-            if not m:
-                raise RuntimeError('Invalid row:', idx, row)
-            df_p.loc[idx, 'id'] = int(m[1])
-        df_p.loc[df_p['id'].duplicated(keep='first'), 'id'] = -1
-        df_p = df_p.set_index('id')[['pred']].rename(columns={'pred': cnn_pe_preds_cols[0]})
-        df = df.join(df_p)
+        df_p = df_p[df_p['id'] > 0]
+        df_m = df_p \
+            .set_index('id')[['pred']] \
+            .rename(columns={'pred': cnn_preds_cols[0]})
+        df = df.join(df_m)
+        if cnn_features:
+            ii = []
+            data = []
+            for id, row in df_p.iterrows():
+                feaure = np.load(J(cnn_features, f'{row["name"]}.npy'))
+                data.append(feaure)
+                ii.append(id)
+            df_f = pd.DataFrame(index=ii, data=data, columns=cnn_features_cols)
+            df = df.join(df_f)
     else:
-        df[cnn_pe_preds_cols[0]] = np.nan
+        df[cnn_preds_cols[0]] = np.nan
 
     # df[col_pl_lt_el] = df[col_pl_short] < df[col_el_short]
     # df[col_el_ratio] = df[col_el_long] / df[col_el_short]
@@ -356,11 +368,17 @@ option_rev = click.option(
     '--rev',
     'rev',
     type=str,
-    default='20230224',
+    default=DEFAULT_REV,
 )
-option_cnn_preds= click.option(
+option_cnn_preds = click.option(
     '--cnn-preds',
     'cnn_preds',
+    type=str,
+    default=None,
+)
+option_cnn_features = click.option(
+    '--cnn-features',
+    'cnn_features',
     type=str,
     default=None,
 )
@@ -389,10 +407,11 @@ def cli():
 @option_seed
 @option_rev
 @option_cnn_preds
+@option_cnn_features
 @option_dest
-def dump_train_test(seed, rev, cnn_preds, dest):
+def dump_train_test(seed, rev, cnn_preds, cnn_features, dest):
     fix_random_states(seed)
-    df_all = load_data(rev, cnn_preds)
+    df_all = load_data(rev, cnn_preds, cnn_features)
     df = df_all.rename(columns={'研究番号': 'id'})[['id', 'test']]
     # df['test'] = df['test'].astype('int')
     df.to_excel(J(dest, f'train_test_{seed}_{rev}.xlsx'), index=False)
@@ -402,13 +421,14 @@ def dump_train_test(seed, rev, cnn_preds, dest):
 @option_seed
 @option_rev
 @option_cnn_preds
+@option_cnn_features
 @option_dest
 @click.option('--plot', 'codes_to_plot', default='11110:10100:11000:10000')
 @click.option('--show', 'show', is_flag=True)
 @click.option('--reduction', 'reduction', default='median')
-def gbm(seed, rev, cnn_preds, dest, codes_to_plot, show, reduction):
+def gbm(seed, rev, cnn_preds, cnn_features, dest, codes_to_plot, show, reduction):
     fix_random_states(seed)
-    df_all = load_data(rev, cnn_preds)
+    df_all = load_data(rev, cnn_preds, cnn_features)
     codes_to_plot = sorted(codes_to_plot.split(':'))
 
     os.makedirs(J(dest, 'results'), exist_ok=True)
@@ -466,12 +486,11 @@ def _plot(ee:list[Experiment], dest:str, show:bool):
 
 @cli.command()
 @option_rev
-@option_cnn_preds
 @option_dest
 @option_src
 @click.option('--code', 'codes_to_plot', default='1111:1010:1100:1000')
 @click.option('--show', 'show', is_flag=True)
-def plot(rev, cnn_preds, dest, src, codes_to_plot, show):
+def plot(rev, dest, src, codes_to_plot, show):
     codes_to_plot = sorted(codes_to_plot.split(':'))
 
     if 'all' in codes_to_plot:
@@ -486,9 +505,10 @@ def plot(rev, cnn_preds, dest, src, codes_to_plot, show):
 @cli.command()
 @option_rev
 @option_cnn_preds
+@option_cnn_features
 @option_dest
 @option_src
-def scores(rev, cnn_preds, dest, src):
+def scores(rev, cnn_preds, cnn_feature, dest, src):
     ee = load_experiments(glob(J(src, '*.pickle')))
 
     # calc scores
@@ -520,11 +540,12 @@ def scores(rev, cnn_preds, dest, src):
 @option_seed
 @option_rev
 @option_cnn_preds
+@option_cnn_features
 @option_dest
 @click.option('--show', 'show', is_flag=True)
-def lr(seed, rev, cnn_preds, dest, show):
+def lr(seed, rev, cnn_preds, cnn_feature, dest, show):
     fix_random_states(seed)
-    df = load_data(rev, cnn_preds)
+    df = load_data(rev, cnn_preds, cnn_features)
 
     lr_cols = {
         '造影超音波/リンパ節_B_1': 'b1',
@@ -598,9 +619,10 @@ def lr(seed, rev, cnn_preds, dest, show):
 @cli.command()
 @option_rev
 @option_cnn_preds
+@option_cnn_features
 @click.option('--mode', 'mode', default='enhance')
-def hist(rev, cnn_preds, mode):
-    df_all = load_data(rev, cnn_preds)
+def hist(rev, cnn_preds, cnn_features, mode):
+    df_all = load_data(rev, cnn_preds, cnn_features)
 
     if mode == 'enhance':
         col = '造影超音波/リンパ節_lymphsize_短径'
@@ -637,9 +659,10 @@ def hist(rev, cnn_preds, mode):
 @cli.command()
 @option_rev
 @option_cnn_preds
+@option_cnn_features
 @option_dest
-def corr(rev, cnn_preds, dest):
-    df_all = load_data(rev, cnn_preds)
+def corr(rev, cnn_preds, cnn_features, dest):
+    df_all = load_data(rev, cnn_preds, cnn_features)
 
     cols = {
         '造影超音波/リンパ節_B_1': 'b1',
@@ -663,6 +686,15 @@ def corr(rev, cnn_preds, dest):
     plt.subplots_adjust(bottom=0.15, left=0.2)
     plt.savefig(J(dest, 'corr.png'))
     plt.show()
+
+
+@cli.command()
+@option_rev
+@option_cnn_preds
+@option_cnn_features
+def i(rev, cnn_preds, cnn_features):
+    df = load_data(rev, cnn_preds, cnn_features)
+
 
 if __name__ == '__main__':
     cli()
