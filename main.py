@@ -329,6 +329,7 @@ class Metrics:
     def from_result(cls, r):
         return calc_metrics(r.gt, r.pred)
 
+
 @dataclass
 class Experiment:
     code: str
@@ -336,27 +337,25 @@ class Experiment:
     result: Result
     metrics: Metrics
 
-@dataclass
-class GBMExperiment(Experiment):
-    importance: pd.DataFrame
-
-
-def load_experiments(paths):
-    ee = []
-    for path in paths:
+    @classmethod
+    def from_file(cls, path):
         if not os.path.exists(path):
             raise RuntimeError(f'{path} does not exist.')
         with open(path, mode='rb') as f:
             r = pickle.load(f)
         m = Metrics.from_result(r)
         code = os.path.splitext(os.path.basename(path))[0]
-        ee.append(Experiment(
+        return Experiment(
             code=code,
             label=code_to_label(code),
             result=r,
             metrics=m,
-        ))
-    return ee
+        )
+
+@dataclass
+class GBMExperiment(Experiment):
+    importance: pd.DataFrame
+
 
 
 
@@ -460,12 +459,13 @@ class CLI(BaseCLI):
         else:
             paths = [J(a.src, f'{code}.pickle') for code in codes_to_plot]
 
-        ee = load_experiments(paths)
+        ee = [Experiment.from_file(p) for p in paths]
         _plot(ee, a.dest, a.show)
 
 
     def run_scores(self, a):
-        ee = load_experiments(glob(J(a.src, '*.pickle')))
+        paths = glob(J(a.src, '*.pickle'))
+        ee = [Experiment.from_file(p) for p in paths]
 
         # calc scores
         scores = {}
@@ -494,13 +494,19 @@ class CLI(BaseCLI):
         lr_cols = {
             '造影超音波/リンパ節_B_1': 'b1',
             '造影超音波/リンパ節_B_2': 'b2',
-            '非造影超音波/リンパ節_lymphsize_短径': 'pl_short',
-            '造影超音波/リンパ節_lymphsize_短径': 'el_short',
+            # col_pl_short: 'pl_short',
+            col_el_short: 'el_short',
+            # col_el_long: 'el_long',
+            # col_pl_long: 'pl_long',
             target_col: 'N',
             'test': 'test',
         }
 
         df = self.df_all[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
+
+        # L = len(self.df_all)
+        # l = len(df)
+        # print(f'original:{L} new:{l} dropped:{L-l} scale:{l/L:.2f}')
 
         df_train = df[df['test'] < 1].drop(['test'], axis=1)
         df_test = df[df['test'] > 0].drop(['test'], axis=1)
@@ -512,16 +518,19 @@ class CLI(BaseCLI):
 
         lr = LogisticRegression(random_state=a.seed)
         lr.fit(train_x, train_y)
-
         pred = lr.predict_proba(test_x)[:, 1]
 
-        coef = lr.coef_[0]
-        intercept = lr.intercept_[0]
 
         result = Result(test_y, pred)
         os.makedirs(J(a.dest, 'results'), exist_ok=True)
         with open(J(a.dest, 'results', 'lr.pickle'), 'wb') as f:
             pickle.dump(result, f)
+
+        _plot([Experiment('lr', 'LR', result, Metrics.from_result(result))], a.dest, a.show)
+        return
+
+        coef = lr.coef_[0]
+        intercept = lr.intercept_[0]
 
         metrics = Metrics.from_result(result)
         thres = metrics.scores.loc['acc', 'thres']
