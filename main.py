@@ -7,8 +7,8 @@ from collections import OrderedDict
 import pickle
 from glob import glob
 
-import click
 from tqdm import tqdm
+from pydantic import BaseModel, Field
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -19,6 +19,7 @@ import sklearn.metrics as skmetrics
 import lightgbm as lgb
 
 from endaaman import Timer, with_wrote
+from endaaman.cli import BaseCLI
 from endaaman.torch import fix_random_states, get_global_seed, set_global_seed
 
 
@@ -358,109 +359,6 @@ def load_experiments(paths):
     return ee
 
 
-option_seed = click.option(
-    '--seed',
-    'seed',
-    type=int,
-    default=get_global_seed(),
-)
-option_rev = click.option(
-    '--rev',
-    'rev',
-    type=str,
-    default=DEFAULT_REV,
-)
-option_cnn_preds = click.option(
-    '--cnn-preds',
-    'cnn_preds',
-    type=str,
-    default=None,
-)
-option_cnn_features = click.option(
-    '--cnn-features',
-    'cnn_features',
-    type=str,
-    default=None,
-)
-option_dest = click.option(
-    '--dest',
-    'dest',
-    type=str,
-    default=None,
-    callback=lambda ctx, param, value: value if value else f'out{ctx.params["rev"]}',
-)
-
-option_src = click.option(
-    '--src',
-    'src',
-    default=None,
-    callback=lambda ctx, param, value: value if value else J(f'out{ctx.params["rev"]}', 'results'),
-)
-
-
-@click.group()
-def cli():
-    pass
-
-
-@cli.command()
-@option_seed
-@option_rev
-@option_cnn_preds
-@option_cnn_features
-@option_dest
-def dump_train_test(seed, rev, cnn_preds, cnn_features, dest):
-    fix_random_states(seed)
-    df_all = load_data(rev, cnn_preds, cnn_features)
-    df = df_all.rename(columns={'研究番号': 'id'})[['id', 'test']]
-    # df['test'] = df['test'].astype('int')
-    df.to_excel(J(dest, f'train_test_{seed}_{rev}.xlsx'), index=False)
-
-
-@cli.command()
-@option_seed
-@option_rev
-@option_cnn_preds
-@option_cnn_features
-@option_dest
-@click.option('--plot', 'codes_to_plot', default='11110:10100:11000:10000')
-@click.option('--show', 'show', is_flag=True)
-@click.option('--reduction', 'reduction', default='median')
-def gbm(seed, rev, cnn_preds, cnn_features, dest, codes_to_plot, show, reduction):
-    fix_random_states(seed)
-    df_all = load_data(rev, cnn_preds, cnn_features)
-    codes_to_plot = sorted(codes_to_plot.split(':'))
-
-    os.makedirs(J(dest, 'results'), exist_ok=True)
-
-    experiments = []
-    for code, (label, cols) in tqdm(CODE_MAP.items()):
-        df = df_all[cols + [target_col, 'test']]
-        result, importance = train_gbm(df, reduction=reduction)
-        with open(J(dest, 'results', f'{code}.pickle'), 'wb') as f:
-            pickle.dump(result, f)
-        metrics = Metrics.from_result(result)
-
-        experiments.append(GBMExperiment(
-            label=label,
-            result=result,
-            metrics=metrics,
-            code=code,
-            importance=importance,
-        ))
-
-    # write importance
-    with pd.ExcelWriter(J(dest, 'importance.xlsx'), engine='xlsxwriter') as writer:
-        for e in reversed(experiments):
-            e.importance.to_excel(writer, sheet_name=e.label)
-            num_format = writer.book.add_format({'num_format': '#,##0.00'})
-            worksheet = writer.sheets[e.label]
-            worksheet.set_column(0, 0, 50, None)
-            worksheet.set_column(1, 6, None, num_format)
-
-    ee_to_plot = [e for e in experiments if ('all' in codes_to_plot or e.code in codes_to_plot)]
-    _plot(ee_to_plot, dest, show)
-
 
 def _plot(ee:list[Experiment], dest:str, show:bool):
     fig = plt.figure(figsize=(10, 8))
@@ -484,217 +382,248 @@ def _plot(ee:list[Experiment], dest:str, show:bool):
         plt.show()
 
 
-@cli.command()
-@option_rev
-@option_dest
-@option_src
-@click.option('--code', 'codes_to_plot', default='1111:1010:1100:1000')
-@click.option('--show', 'show', is_flag=True)
-def plot(rev, dest, src, codes_to_plot, show):
-    codes_to_plot = sorted(codes_to_plot.split(':'))
+class CLI(BaseCLI):
+    class CommonArgs(BaseModel):
+        seed:int = Field(get_global_seed())
+        rev:str = DEFAULT_REV
+        cnn_preds:str = 'data/cnn-preds/p.xlsx'
+        cnn_features:str = 'data/cnn-preds/features'
+        show:bool = Field(False, cli=('--show', ))
 
-    if 'all' in codes_to_plot:
-        paths = glob(J(src, '*.pickle'))
-    else:
-        paths = [J(src, f'{code}.pickle') for code in codes_to_plot]
+        @property
+        def dest(self):
+            return f'out{self.rev}_{self.seed}'
 
-    ee = load_experiments(paths)
-    _plot(ee, dest, show)
+        @property
+        def src(self):
+            return J(self.dest, 'results')
+
+    def pre_common(self, a):
+        fix_random_states(a.seed)
+        self.df_all = load_data(a.rev, a.cnn_preds, a.cnn_features)
 
 
-@cli.command()
-@option_rev
-@option_cnn_preds
-@option_cnn_features
-@option_dest
-@option_src
-def scores(rev, cnn_preds, cnn_feature, dest, src):
-    ee = load_experiments(glob(J(src, '*.pickle')))
+    def run_dump_train_test(self, a:CommonArgs):
+        df = self.df_all.rename(columns={'研究番号': 'id'})[['id', 'test']]
+        # df['test'] = df['test'].astype('int')
+        p = J(a.dest, f'train_test_{a.seed}_{a.rev}.xlsx')
+        df.to_excel(p, index=False)
+        print(f'wrote {p}')
 
-    # calc scores
-    scores = {}
-    for e in ee:
-        scores[e.label] = {
-            'auc': e.metrics.auc,
-            'auc_lower': e.metrics.ci[0],
-            'auc_upper': e.metrics.ci[1],
-            'threshold': e.metrics.scores.loc['youden', 'thres'],
-            'acc': e.metrics.scores.loc['youden', 'acc'],
-            'recall': e.metrics.scores.loc['youden', 'recall'],
-            'sensitivity': e.metrics.scores.loc['youden', 'sensitivity'],
+
+    class GbmArgs(CommonArgs):
+        codes_to_plot:str = Field('111100:101000', cli=('--code', ))
+        reduction:str = 'median'
+
+    def run_gbm(self, a:GbmArgs):
+        codes_to_plot = sorted(a.codes_to_plot.split(':'))
+
+        os.makedirs(J(a.dest, 'results'), exist_ok=True)
+
+        experiments = []
+        for code, (label, cols) in tqdm(CODE_MAP.items()):
+            df = self.df_all[cols + [target_col, 'test']]
+            result, importance = train_gbm(df, reduction=a.reduction)
+            with open(J(a.dest, 'results', f'{code}.pickle'), 'wb') as f:
+                pickle.dump(result, f)
+            metrics = Metrics.from_result(result)
+
+            experiments.append(GBMExperiment(
+                label=label,
+                result=result,
+                metrics=metrics,
+                code=code,
+                importance=importance,
+            ))
+
+        # write importance
+        with pd.ExcelWriter(J(a.dest, 'importance.xlsx'), engine='xlsxwriter') as writer:
+            for e in reversed(experiments):
+                e.importance.to_excel(writer, sheet_name=e.label)
+                num_format = writer.book.add_format({'num_format': '#,##0.00'})
+                worksheet = writer.sheets[e.label]
+                worksheet.set_column(0, 0, 50, None)
+                worksheet.set_column(1, 6, None, num_format)
+
+        ee_to_plot = [e for e in experiments if ('all' in codes_to_plot or e.code in codes_to_plot)]
+        _plot(ee_to_plot, a.dest, a.show)
+
+
+    class PlotArgs(CommonArgs):
+        codes_to_plot:str = Field('111100:101000', cli=('--code', ))
+
+    def run_plot(self, a):
+        codes_to_plot = sorted(a.codes_to_plot.split(':'))
+
+        if 'all' in codes_to_plot:
+            paths = glob(J(a.src, '*.pickle'))
+        else:
+            paths = [J(a.src, f'{code}.pickle') for code in codes_to_plot]
+
+        ee = load_experiments(paths)
+        _plot(ee, a.dest, a.show)
+
+
+    def run_scores(self, a):
+        ee = load_experiments(glob(J(a.src, '*.pickle')))
+
+        # calc scores
+        scores = {}
+        for e in ee:
+            scores[e.label] = {
+                'auc': e.metrics.auc,
+                'auc_lower': e.metrics.ci[0],
+                'auc_upper': e.metrics.ci[1],
+                'threshold': e.metrics.scores.loc['youden', 'thres'],
+                'acc': e.metrics.scores.loc['youden', 'acc'],
+                'recall': e.metrics.scores.loc['youden', 'recall'],
+                'sensitivity': e.metrics.scores.loc['youden', 'sensitivity'],
+            }
+
+        # write scores
+        df_score = pd.DataFrame(scores).transpose()
+        df_score = df_score.sort_values(by='auc', ascending=False)
+        with pd.ExcelWriter(J(a.dest, 'scores.xlsx'), engine='xlsxwriter') as writer:
+            df_score.to_excel(writer, sheet_name='scores')
+            num_format = writer.book.add_format({'num_format': '#,##0.000'})
+            worksheet = writer.sheets['scores']
+            worksheet.set_column(0, 0, 12, None)
+            worksheet.set_column(1, 30, None, num_format)
+
+    def run_lr(self, a):
+        lr_cols = {
+            '造影超音波/リンパ節_B_1': 'b1',
+            '造影超音波/リンパ節_B_2': 'b2',
+            '非造影超音波/リンパ節_lymphsize_短径': 'pl_short',
+            '造影超音波/リンパ節_lymphsize_短径': 'el_short',
+            target_col: 'N',
+            'test': 'test',
         }
 
-    # write scores
-    df_score = pd.DataFrame(scores).transpose()
-    df_score = df_score.sort_values(by='auc', ascending=False)
-    with pd.ExcelWriter(J(dest, 'scores.xlsx'), engine='xlsxwriter') as writer:
-        df_score.to_excel(writer, sheet_name='scores')
-        num_format = writer.book.add_format({'num_format': '#,##0.000'})
-        worksheet = writer.sheets['scores']
-        worksheet.set_column(0, 0, 12, None)
-        worksheet.set_column(1, 30, None, num_format)
+        df = self.df_all[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
+
+        df_train = df[df['test'] < 1].drop(['test'], axis=1)
+        df_test = df[df['test'] > 0].drop(['test'], axis=1)
+
+        train_x = df_train.drop(['N'], axis=1)
+        train_y = df_train['N']
+        test_x = df_test.drop(['N'], axis=1)
+        test_y = df_test['N']
+
+        lr = LogisticRegression(random_state=a.seed)
+        lr.fit(train_x, train_y)
+
+        pred = lr.predict_proba(test_x)[:, 1]
+
+        coef = lr.coef_[0]
+        intercept = lr.intercept_[0]
+
+        result = Result(test_y, pred)
+        os.makedirs(J(a.dest, 'results'), exist_ok=True)
+        with open(J(a.dest, 'results', 'lr.pickle'), 'wb') as f:
+            pickle.dump(result, f)
+
+        metrics = Metrics.from_result(result)
+        thres = metrics.scores.loc['acc', 'thres']
+        intercept2 = thres - intercept - coef[0] - coef[1]
+
+        print('coef=', coef)
+        print('intercept=', intercept)
+        print('thres=', thres)
+
+        # target: b1=b2=True
+        coef2 = coef[[2,3]]
+        mini = np.min(coef2)
+        coef2 = coef2 / mini
+        intercept2 = intercept2 / mini
+
+        print('coef2', coef2)
+        print('intercept2', intercept2)
+
+        df2 = df[(df['b1']>0) & (df['b2']>0)].copy()
+        pred = df['pl_short'] * coef2[0] + df['el_short'] * coef2[0]
+        print(pred)
+        df2['pred_value'] = pred
+        df2['pred'] = pred > intercept2
+
+        params = {
+            'coef_b1': coef[0],
+            'coef_b2': coef[1],
+            'coef_pl_short': coef[2],
+            'coef_el_short': coef[3],
+            'intercept': intercept,
+            'coef2_pl_short': coef2[0],
+            'coef2_el_short': coef2[1],
+            'intercept2': intercept,
+        }
+
+        pd.DataFrame.from_dict({k:[v] for k, v in params.items()}).to_excel(J(a.dest, 'lr.xlsx'))
+        df2.to_excel(J(a.dest, 'lr_pred_b1b2.xlsx'))
 
 
+    def run_corr(self, a):
+        cols = {
+            '造影超音波/リンパ節_B_1': 'B1',
+            '造影超音波/リンパ節_B_2': 'B2',
+            '造影超音波/リンパ節_B_3': 'B3',
+            '造影超音波/リンパ節_B_4': 'B4',
+            '造影超音波/リンパ節_B_5': 'B5',
+            '造影超音波/リンパ節_B_6': 'B6',
+            col_el_short: 'short axis(enhance lymph)',
+            col_el_long: 'long axis(enhance lymph)',
+            col_pl_short: 'short axis(plain lymph)',
+            col_pl_long: 'long axis(plain lymph)',
+            target_col: 'N',
+        }
 
-@cli.command()
-@option_seed
-@option_rev
-@option_cnn_preds
-@option_cnn_features
-@option_dest
-@click.option('--show', 'show', is_flag=True)
-def lr(seed, rev, cnn_preds, cnn_feature, dest, show):
-    fix_random_states(seed)
-    df = load_data(rev, cnn_preds, cnn_features)
+        df = self.df_all[list(cols.keys())].dropna().rename(columns=cols)
 
-    lr_cols = {
-        '造影超音波/リンパ節_B_1': 'b1',
-        '造影超音波/リンパ節_B_2': 'b2',
-        '非造影超音波/リンパ節_lymphsize_短径': 'pl_short',
-        '造影超音波/リンパ節_lymphsize_短径': 'el_short',
-        target_col: 'N',
-        'test': 'test',
-    }
+        plt.figure(figsize=(12, 9))
+        ax = sns.heatmap(df.corr(), vmax=1, vmin=-1, center=0, annot=True)
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+        plt.subplots_adjust(bottom=0.25, left=0.2)
+        plt.savefig(J(a.dest, 'corr.png'))
+        if a.show:
+            plt.show()
 
-    df = df[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
+    class HistArgs(CommonArgs):
+        mode:str = 'enhance'
 
-    df_train = df[df['test'] < 1].drop(['test'], axis=1)
-    df_test = df[df['test'] > 0].drop(['test'], axis=1)
+    def run_hist(self, a:HistArgs):
+        if a.mode == 'enhance':
+            col = '造影超音波/リンパ節_lymphsize_短径'
+        elif a.mode == 'plain':
+            col = '非造影超音波/リンパ節_lymphsize_短径'
+        else:
+            raise RuntimeError(f'Invalid mode: {a.mode}')
+        df = self.df_all[col]
+        x0 = df[~self.df_all[target_col]]
+        x1 = df[self.df_all[target_col]]
 
-    train_x = df_train.drop(['N'], axis=1)
-    train_y = df_train['N']
-    test_x = df_test.drop(['N'], axis=1)
-    test_y = df_test['N']
+        # sturges
+        num_bins = math.ceil(math.log2(len(df) * 2))
+        # num_bins = 17
+        x_max = df.max()
+        x_min = df.min()
+        num_bins = np.linspace(x_min, x_max, num_bins)
 
-    lr = LogisticRegression(random_state=seed)
-    lr.fit(train_x, train_y)
+        fig = plt.figure()
+        ax = fig.add_subplot(1, 1, 1)
+        ax.set_title(f'Lymph node short diameter ({a.mode})')
+        ax.hist([x1, x0], label=['N>0', 'N=0'], bins=num_bins, alpha=0.6, stacked=True)
+        # ax.hist(x0, bins=num_bins, alpha=0.6)
+        # ax.hist(x1, bins=num_bins, alpha=0.6)
+        ax.legend()
+        ax.set_xticks(np.arange(0, 18, 2))
+        ax.set_xlim(0, 18)
 
-    pred = lr.predict_proba(test_x)[:, 1]
+        plt.savefig(with_wrote(J(a.dest, f'hist_lymph_{a.mode}.png')))
+        if a.show:
+            plt.show()
 
-    coef = lr.coef_[0]
-    intercept = lr.intercept_[0]
-
-    result = Result(test_y, pred)
-    os.makedirs(J(dest, 'results'), exist_ok=True)
-    with open(J(dest, 'results', 'lr.pickle'), 'wb') as f:
-        pickle.dump(result, f)
-
-    metrics = Metrics.from_result(result)
-    thres = metrics.scores.loc['acc', 'thres']
-    intercept2 = thres - intercept - coef[0] - coef[1]
-
-    print('coef=', coef)
-    print('intercept=', intercept)
-    print('thres=', thres)
-
-    # target: b1=b2=True
-    coef2 = coef[[2,3]]
-    mini = np.min(coef2)
-    coef2 = coef2 / mini
-    intercept2 = intercept2 / mini
-
-    print('coef2', coef2)
-    print('intercept2', intercept2)
-
-    df2 = df[(df['b1']>0) & (df['b2']>0)].copy()
-    pred = df['pl_short'] * coef2[0] + df['el_short'] * coef2[0]
-    print(pred)
-    df2['pred_value'] = pred
-    df2['pred'] = pred > intercept2
-
-    params = {
-        'coef_b1': coef[0],
-        'coef_b2': coef[1],
-        'coef_pl_short': coef[2],
-        'coef_el_short': coef[3],
-        'intercept': intercept,
-        'coef2_pl_short': coef2[0],
-        'coef2_el_short': coef2[1],
-        'intercept2': intercept,
-    }
-
-    pd.DataFrame.from_dict({k:[v] for k, v in params.items()}).to_excel(J(dest, 'lr.xlsx'))
-    df2.to_excel(J(dest, 'lr_pred_b1b2.xlsx'))
-
-@cli.command()
-@option_rev
-@option_cnn_preds
-@option_cnn_features
-@click.option('--mode', 'mode', default='enhance')
-def hist(rev, cnn_preds, cnn_features, mode):
-    df_all = load_data(rev, cnn_preds, cnn_features)
-
-    if mode == 'enhance':
-        col = '造影超音波/リンパ節_lymphsize_短径'
-    elif mode == 'plain':
-        col = '非造影超音波/リンパ節_lymphsize_短径'
-    else:
-        raise RuntimeError(f'Invalid mode: {mode}')
-    df = df_all[col]
-    x0 = df[~df_all[target_col]]
-    x1 = df[df_all[target_col]]
-
-    # sturges
-    num_bins = math.ceil(math.log2(len(df) * 2))
-    # num_bins = 17
-    x_max = df.max()
-    x_min = df.min()
-    num_bins = np.linspace(x_min, x_max, num_bins)
-
-
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
-    ax.set_title(f'Lymph node short diameter ({mode})')
-    ax.hist([x1, x0], label=['N>0', 'N=0'], bins=num_bins, alpha=0.6, stacked=True)
-    # ax.hist(x0, bins=num_bins, alpha=0.6)
-    # ax.hist(x1, bins=num_bins, alpha=0.6)
-    ax.legend()
-    ax.set_xticks(np.arange(0, 18, 2))
-    ax.set_xlim(0, 18)
-
-    plt.savefig(with_wrote(f'out/hist_lymph_{mode}.png'))
-    plt.show()
-
-
-@cli.command()
-@option_rev
-@option_cnn_preds
-@option_cnn_features
-@option_dest
-def corr(rev, cnn_preds, cnn_features, dest):
-    df_all = load_data(rev, cnn_preds, cnn_features)
-
-    cols = {
-        '造影超音波/リンパ節_B_1': 'b1',
-        '造影超音波/リンパ節_B_2': 'b2',
-        '造影超音波/リンパ節_B_3': 'b3',
-        '造影超音波/リンパ節_B_4': 'b4',
-        '造影超音波/リンパ節_B_5': 'b5',
-        '造影超音波/リンパ節_B_6': 'b6',
-        col_el_short: 'el_short',
-        col_el_long: 'el_short',
-        col_pl_short: 'pl_short',
-        col_pl_long: 'pl_long',
-        target_col: 'N',
-    }
-
-    df = df_all[list(cols.keys())].dropna().rename(columns=cols)
-
-    plt.figure(figsize=(12, 9))
-    ax = sns.heatmap(df.corr(), vmax=1, vmin=-1, center=0, annot=True)
-    ax.set_xticklabels(ax.get_xticklabels(), rotation=40)
-    plt.subplots_adjust(bottom=0.15, left=0.2)
-    plt.savefig(J(dest, 'corr.png'))
-    plt.show()
-
-
-@cli.command()
-@option_rev
-@option_cnn_preds
-@option_cnn_features
-def i(rev, cnn_preds, cnn_features):
-    df = load_data(rev, cnn_preds, cnn_features)
 
 
 if __name__ == '__main__':
-    cli()
+    # cli()
+    c = CLI()
+    c.run()
