@@ -1,9 +1,10 @@
 import os
 import math
+from enum import IntEnum, auto
 import re
 from typing import NamedTuple
 from dataclasses import dataclass
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
 import pickle
 from glob import glob
 
@@ -19,12 +20,10 @@ import sklearn.metrics as skmetrics
 import lightgbm as lgb
 
 from endaaman import Timer, with_wrote
-from endaaman.cli import BaseCLI
-from endaaman.torch import fix_random_states, get_global_seed, set_global_seed
+from endaaman.ml import MLCLI, get_global_seed, define_ml_args
 
 
 J = os.path.join
-set_global_seed(44)
 sns.set(style='whitegrid')
 
 def sigmoid(a):
@@ -358,7 +357,6 @@ class GBMExperiment(Experiment):
 
 
 
-
 def _plot(ee:list[Experiment], dest:str, show:bool):
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111)
@@ -381,12 +379,12 @@ def _plot(ee:list[Experiment], dest:str, show:bool):
         plt.show()
 
 
-class CLI(BaseCLI):
-    class CommonArgs(BaseModel):
-        seed:int = Field(get_global_seed())
+class CLI(MLCLI):
+    class CommonArgs(define_ml_args(seed=44)):
         rev:str = DEFAULT_REV
-        cnn_preds:str = 'data/cnn-preds/p.xlsx'
-        cnn_features:str = 'data/cnn-preds/features'
+        cnn_preds:str = Field('data/cnn-preds/p.xlsx', cli=('--cnn-preds', ))
+        cnn_features:str = Field('data/cnn-preds/features', cli=('--cnn-features', ))
+        table_only:bool = Field(False, cli=('--table-only', ))
         show:bool = Field(False, cli=('--show', ))
 
         @property
@@ -398,9 +396,7 @@ class CLI(BaseCLI):
             return J(self.dest, 'results')
 
     def pre_common(self, a):
-        fix_random_states(a.seed)
         self.df_all = load_data(a.rev, a.cnn_preds, a.cnn_features)
-
 
     def run_dump_train_test(self, a:CommonArgs):
         df = self.df_all.rename(columns={'研究番号': 'id'})[['id', 'test']]
@@ -411,7 +407,7 @@ class CLI(BaseCLI):
 
 
     class GbmArgs(CommonArgs):
-        codes_to_plot:str = Field('111100:101000', cli=('--code', ))
+        codes_to_plot:str = Field('111100:110000', cli=('--code', ))
         reduction:str = 'median'
 
     def run_gbm(self, a:GbmArgs):
@@ -630,9 +626,104 @@ class CLI(BaseCLI):
         if a.show:
             plt.show()
 
+    def run_demographic(self, a):
+        num_to_ope_proc = [ 'Bt+SN' 'Bt+Ax' 'Bp+SN' 'Bp+Ax' ]
+
+        num_to_hormone_therapy = [
+            'なし', 'TAM (5y or 10y)',
+            'TAM+LHRHagonist', 'AI (5y or  10y)'
+        ]
+
+        num_to_chemo_therapy = [
+            'なし', 'EC/AC⇒PTX/DTX', 'ddEC/AC⇒P/D',
+            'TC, PTXonly', 'CMF', 'full regimen + Cape',
+        ]
+        num_to_nac = [ 'なし', '内分泌療法', '化学療法', '化学療法+HER', ]
+
+        num_to_her2_therapy = [ 'なし' 'HER' 'HER+PER' 'HER+PER, T-DM1' ]
+
+        num_to_radio = [ 'なし', '温存乳房照射', 'PMRT', ]
+
+        num_to_clinical_stage = [
+            'Stgae 0', 'Stage I', 'Stage 2A', 'Stage 2B',
+            'Stage 3A', 'Stage 3B', 'Stage 3C',
+        ]
+        num_to_tumor_type = [
+            'ductal carcimnoma in situ',
+            'invasive ductal carcinoma',
+            'invasive lobular carcinoma',
+            'mucinous carcinoma',
+            'other types',
+        ]
+
+        num_to_her2 = [
+            'negative: 0',
+            'negative: 1',
+            'netagive: 2_DISH or FISH (-)',
+            'positive: 2_DISH or FISH (+)',
+            '2_DISH or FISH unknown',
+            'positive',
+        ]
+
+        class CT(IntEnum):
+            binary = 0
+            numerical = 1
+            categorical = 2
+
+        class C(BaseModel):
+            name: str
+            type: int
+            map: list|None = None
+
+        patient_cols = {
+            'age': C('Age', CT.binary),
+            '性別': C('Sex(female)', CT.binary),
+            '閉経有無': C('Menopause', CT.binary),
+        }
+        clinical_stage_cols = {
+            '臨床病期_T': C('T stage', CT.categorical, ['0', '1', '2', '3', '4']),
+            '臨床病期_N': C('N stage', CT.categorical, ['0', '1']),
+            '臨床病期_M': C('M stage', CT.categorical, ['0', '1']),
+            '臨床病期_Stage': C('Clinical stage', CT, num_to_clinical_stage),
+        }
+        therapy_cols = {
+            '周術期治療_手術内容': C('Operation procedure', CT.categorical, num_to_ope_proc),
+            '周術期治療_術前薬物療法': C('Neoadjuvant chemotherapy', CT.categorical, num_to_nac),
+            '周術期治療_ホルモン療法': C('Hormone therapy', CT.categorical, num_to_hormone_therapy),
+            '周術期治療_化学療法': C('Chemotherapy', CT.categorical, num_to_chemo_therapy),
+            '周術期治療_抗HER2療法': C('HER2 therapy', CT.categorical, num_to_hormone_therapy),
+            '周術期治療_術後放射線療法': C('Postoperative radiotherapy', CT.categorical, num_to_radio),
+        }
+        pathological_cols = {
+            '原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_Tummortype': C('tumor type', CT.categorical, ),
+            '原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_浸潤(1,0)': C('invasion', CT.binary),
+            '原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_ER(0-100)': C('ER', CT.numerical),
+            '原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_PR(0-100)': C('PR', CT.numerical),
+            '原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_HER2': C('HER2', CT.categorical, num_to_her2),
+            '原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_Ki-67(0-100)': C('Ki-67', CT.numerical),
+            '原発巣/病理学検査(切除検体にてのみ把握可能な項目)_NG': C('Nuclear grade', CT.categorical, ['0', '1', '2', '3']),
+            '原発巣/病理学検査(切除検体にてのみ把握可能な項目)_HG': C('WHO grade', CT.categorical, ['0', '1', '2', '3']),
+        }
+
+        prognosis_cols = {
+            '予後情報_再発': 'Recurrence',
+        }
+
+        all_cols = patient_cols | clinical_stage_cols | therapy_cols | pathological_cols | prognosis_cols
+
+        df_base = self.df_all[List(all_cols.keys()) + ['test']].rename(columns=all_cols)
+        df_train = df_base[~df_base.test]
+        df_test = df_base[df_base.test]
+        for df in [df_train, df_test]:
+            pass
+
+        # MEMO
+        # Nanの扱い
 
 
+    def run_i(self, a):
+        pass
+
+cli = CLI()
 if __name__ == '__main__':
-    # cli()
-    c = CLI()
-    c.run()
+    cli.run()
