@@ -12,6 +12,7 @@ from tqdm import tqdm
 from pydantic import BaseModel, Field
 import numpy as np
 import pandas as pd
+import scipy.stats as st
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import StratifiedKFold, train_test_split
@@ -35,7 +36,7 @@ def odds(p):
 def logit(p):
     return np.log(odds(p))
 
-DEFAULT_REV = '20230224'
+DEFAULT_REV = '20230330'
 
 
 plain_primary_cols = [
@@ -397,6 +398,7 @@ class CLI(MLCLI):
 
     def pre_common(self, a):
         self.df_all = load_data(a.rev, a.cnn_preds, a.cnn_features)
+        os.makedirs(J(a.dest, 'results'), exist_ok=True)
 
     def run_dump_train_test(self, a:CommonArgs):
         df = self.df_all.rename(columns={'研究番号': 'id'})[['id', 'test']]
@@ -412,8 +414,6 @@ class CLI(MLCLI):
 
     def run_gbm(self, a:GbmArgs):
         codes_to_plot = sorted(a.codes_to_plot.split(':'))
-
-        os.makedirs(J(a.dest, 'results'), exist_ok=True)
 
         experiments = []
         for code, (label, cols) in tqdm(CODE_MAP.items()):
@@ -518,7 +518,6 @@ class CLI(MLCLI):
 
 
         result = Result(test_y, pred)
-        os.makedirs(J(a.dest, 'results'), exist_ok=True)
         with open(J(a.dest, 'results', 'lr.pickle'), 'wb') as f:
             pickle.dump(result, f)
 
@@ -627,7 +626,7 @@ class CLI(MLCLI):
             plt.show()
 
     def run_demographic(self, a):
-        num_to_ope_proc = [ 'Bt+SN' 'Bt+Ax' 'Bp+SN' 'Bp+Ax' ]
+        num_to_ope_proc = [ 'Bt+SN', 'Bt+Ax', 'Bp+SN', 'Bp+Ax' ]
 
         num_to_hormone_therapy = [
             'なし', 'TAM (5y or 10y)',
@@ -640,7 +639,7 @@ class CLI(MLCLI):
         ]
         num_to_nac = [ 'なし', '内分泌療法', '化学療法', '化学療法+HER', ]
 
-        num_to_her2_therapy = [ 'なし' 'HER' 'HER+PER' 'HER+PER, T-DM1' ]
+        num_to_her2_therapy = [ 'なし', 'HER', 'HER+PER', 'HER+PER', 'T-DM1' ]
 
         num_to_radio = [ 'なし', '温存乳房照射', 'PMRT', ]
 
@@ -670,55 +669,99 @@ class CLI(MLCLI):
             numerical = 1
             categorical = 2
 
-        class C(BaseModel):
-            name: str
-            type: int
-            map: list|None = None
+        C = namedtuple('C', ['old_name', 'name', 'type', 'map'])
+        C.__new__.__defaults__ = ('', 0, None)
 
-        patient_cols = {
-            'age': C('Age', CT.binary),
-            '性別': C('Sex(female)', CT.binary),
-            '閉経有無': C('Menopause', CT.binary),
-        }
-        clinical_stage_cols = {
-            '臨床病期_T': C('T stage', CT.categorical, ['0', '1', '2', '3', '4']),
-            '臨床病期_N': C('N stage', CT.categorical, ['0', '1']),
-            '臨床病期_M': C('M stage', CT.categorical, ['0', '1']),
-            '臨床病期_Stage': C('Clinical stage', CT, num_to_clinical_stage),
-        }
-        therapy_cols = {
-            '周術期治療_手術内容': C('Operation procedure', CT.categorical, num_to_ope_proc),
-            '周術期治療_術前薬物療法': C('Neoadjuvant chemotherapy', CT.categorical, num_to_nac),
-            '周術期治療_ホルモン療法': C('Hormone therapy', CT.categorical, num_to_hormone_therapy),
-            '周術期治療_化学療法': C('Chemotherapy', CT.categorical, num_to_chemo_therapy),
-            '周術期治療_抗HER2療法': C('HER2 therapy', CT.categorical, num_to_hormone_therapy),
-            '周術期治療_術後放射線療法': C('Postoperative radiotherapy', CT.categorical, num_to_radio),
-        }
-        pathological_cols = {
-            '原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_Tummortype': C('tumor type', CT.categorical, ),
-            '原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_浸潤(1,0)': C('invasion', CT.binary),
-            '原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_ER(0-100)': C('ER', CT.numerical),
-            '原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_PR(0-100)': C('PR', CT.numerical),
-            '原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_HER2': C('HER2', CT.categorical, num_to_her2),
-            '原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_Ki-67(0-100)': C('Ki-67', CT.numerical),
-            '原発巣/病理学検査(切除検体にてのみ把握可能な項目)_NG': C('Nuclear grade', CT.categorical, ['0', '1', '2', '3']),
-            '原発巣/病理学検査(切除検体にてのみ把握可能な項目)_HG': C('WHO grade', CT.categorical, ['0', '1', '2', '3']),
-        }
+        patient_cols = [
+            C('age', 'Age', CT.binary),
+            C('性別', 'Sex(female)', CT.binary),
+            C('閉経有無', 'Menopause', CT.binary),
+        ]
+        clinical_stage_cols = [
+            C('臨床病期_T', 'T stage', CT.categorical, ['0', '1', '2', '3', '4']),
+            C('臨床病期_N', 'N stage', CT.categorical, ['0', '1']),
+            C('臨床病期_M', 'M stage', CT.categorical, ['0', '1']),
+            C('臨床病期_Stage', 'Clinical stage', CT, num_to_clinical_stage),
+        ]
+        therapy_cols = [
+            C('周術期治療_手術内容', 'Operation procedure', CT.categorical, num_to_ope_proc),
+            C('周術期治療_術前薬物療法', 'Neoadjuvant chemotherapy', CT.categorical, num_to_nac),
+            C('周術期治療_ホルモン療法', 'Hormone therapy', CT.categorical, num_to_hormone_therapy),
+            C('周術期治療_化学療法', 'Chemotherapy', CT.categorical, num_to_chemo_therapy),
+            C('周術期治療_抗HER2療法', 'HER2 therapy', CT.categorical, num_to_hormone_therapy),
+            C('周術期治療_術後放射線療法', 'Postoperative radiotherapy', CT.categorical, num_to_radio),
+        ]
+        pathological_cols = [
+            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_Tummortype', 'tumor type', CT.categorical, num_to_tumor_type),
+            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_浸潤(1,0)', 'invasion', CT.binary),
+            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_ER(0-100)', 'ER', CT.numerical),
+            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_PR(0-100)', 'PR', CT.numerical),
+            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_HER2', 'HER2', CT.categorical, num_to_her2),
+            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_Ki-67(0-100)', 'Ki-67', CT.numerical),
+            C('原発巣/病理学検査(切除検体にてのみ把握可能な項目)_NG', 'Nuclear grade', CT.categorical, ['0', '1', '2', '3']),
+            C('原発巣/病理学検査(切除検体にてのみ把握可能な項目)_HG', 'WHO grade', CT.categorical, ['0', '1', '2', '3']),
+        ]
 
-        prognosis_cols = {
-            '予後情報_再発': 'Recurrence',
+        prognosis_cols = [
+            C('予後情報_再発', 'Recurrence', CT.binary),
+        ]
+
+        features_cols = [
+            C(c, c, CT.numerical)
+            for c in plain_primary_cols + plain_lymph_cols + enhance_primary_cols + enhance_lymph_cols
+        ]
+
+        all_cols = patient_cols + clinical_stage_cols + therapy_cols + pathological_cols + prognosis_cols + features_cols
+
+
+        df_base = self.df_all[[c.old_name for c in all_cols] + ['test']].rename(columns={c.old_name: c.name for c in all_cols})
+        dfs = {
+            'all': df_base.drop('test', axis=1),
+            'train': df_base[~df_base['test']].drop('test', axis=1),
+            'test': df_base[df_base['test']].drop('test', axis=1),
         }
+        self.dfs = dfs
 
-        all_cols = patient_cols | clinical_stage_cols | therapy_cols | pathological_cols | prognosis_cols
+        cols_by_name = {c.name: c for c in all_cols}
 
-        df_base = self.df_all[List(all_cols.keys()) + ['test']].rename(columns=all_cols)
-        df_train = df_base[~df_base.test]
-        df_test = df_base[df_base.test]
-        for df in [df_train, df_test]:
-            pass
+        data = {}
+        for t, df in dfs.items():
+            data_by_t = {}
+            for name in df.columns:
+                col = cols_by_name[name]
+                values = df[name].replace('-', np.nan).dropna().values
+                x = values
+                data_by_t[name] = {
+                    'mean': np.mean(x),
+                    'sum': np.sum(x),
+                    'len': len(x),
+                    'se': np.std(x, ddof=1) / np.sqrt(len(x)),
+                }
+                if t == 'test':
+                    values_to_compare = dfs['train'][name].replace('-', np.nan).dropna().values
+                    __t, p  = st.mannwhitneyu(values_to_compare, values)
+                    data_by_t[name]['p'] = p
 
-        # MEMO
-        # Nanの扱い
+                if col.type == CT.categorical:
+                    for i, label in enumerate(col.map):
+                        x = values == i
+                        data_by_t[f'{name} - {label}'] = {
+                            'mean': np.mean(x),
+                            'sum': np.sum(x),
+                            'len': len(x),
+                            'se': np.std(x, ddof=1) / np.sqrt(len(x)),
+                        }
+
+
+            data[t] = pd.DataFrame(data_by_t).transpose()
+
+
+        with pd.ExcelWriter(J(a.dest, 'demographic.xlsx'), engine='xlsxwriter') as writer:
+            for t, df in data.items():
+                df.to_excel(writer, sheet_name=t)
+
+            for t, df in dfs.items():
+                df.to_excel(writer, sheet_name=f'{t}(data)')
 
 
     def run_i(self, a):
