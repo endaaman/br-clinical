@@ -304,7 +304,7 @@ def calc_metrics(gt, pred):
             'acc': acc_scores[i],
             'f1': f1_scores[i],
             'recall': tpr[i],
-            'sensitivity': -fpr[i]+1,
+            'specificity': -fpr[i]+1,
             'thres': thresholds[i],
         } for k, i in ii.items()
     }).transpose()
@@ -338,6 +338,16 @@ class Experiment:
     metrics: Metrics
 
     @classmethod
+    def from_result(cls, code, label, result):
+        return Experiment(
+            code,
+            label,
+            result,
+            Metrics.from_result(result)
+        )
+
+
+    @classmethod
     def from_file(cls, path):
         if not os.path.exists(path):
             raise RuntimeError(f'{path} does not exist.')
@@ -358,19 +368,20 @@ class GBMExperiment(Experiment):
 
 
 
-def _plot(ee:list[Experiment], dest:str, show:bool):
+def _plot(ee:list[Experiment], value_only:bool, dest:str, show:bool):
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111)
     for e in sorted(ee, key=lambda e: -e.metrics.auc):
         m = e.metrics
+        value = f'{m.auc*100:.1f}% ({m.ci[0]*100:.1f}-{m.ci[1]*100:.1f}%)'
         ax.plot(
             m.fpr, m.tpr,
-            label=f'{e.label}={m.auc*100:.1f}% ({m.ci[0]*100:.1f}-{m.ci[1]*100:.1f}%)'
+            label=value if value_only else f'{e.label}={value}'
         )
 
     ax.set_ylabel('tpr')
     ax.set_xlabel('fpr')
-    plt.legend()
+    plt.legend(loc='lower right')
 
     suffix = codes_to_hex([e.code for e in ee])
     p = J(dest, f'roc_{suffix}.png')
@@ -387,6 +398,7 @@ class CLI(MLCLI):
         cnn_features:str = Field('data/cnn-preds/features', cli=('--cnn-features', ))
         table_only:bool = Field(False, cli=('--table-only', ))
         show:bool = Field(False, cli=('--show', ))
+        value_only:bool = Field(False, cli=('--value-only', ))
 
         @property
         def dest(self):
@@ -441,11 +453,11 @@ class CLI(MLCLI):
                 worksheet.set_column(1, 6, None, num_format)
 
         ee_to_plot = [e for e in experiments if ('all' in codes_to_plot or e.code in codes_to_plot)]
-        _plot(ee_to_plot, a.dest, a.show)
+        _plot(ee_to_plot, a.value_only, a.dest, a.show)
 
 
     class PlotArgs(CommonArgs):
-        codes_to_plot:str = Field('111100:101000', cli=('--code', ))
+        codes_to_plot:str = Field('111110:110000', cli=('--code', ))
 
     def run_plot(self, a):
         codes_to_plot = sorted(a.codes_to_plot.split(':'))
@@ -456,7 +468,7 @@ class CLI(MLCLI):
             paths = [J(a.src, f'{code}.pickle') for code in codes_to_plot]
 
         ee = [Experiment.from_file(p) for p in paths]
-        _plot(ee, a.dest, a.show)
+        _plot(ee, a.value_only, a.dest, a.show)
 
 
     def run_scores(self, a):
@@ -473,7 +485,7 @@ class CLI(MLCLI):
                 'threshold': e.metrics.scores.loc['youden', 'thres'],
                 'acc': e.metrics.scores.loc['youden', 'acc'],
                 'recall': e.metrics.scores.loc['youden', 'recall'],
-                'sensitivity': e.metrics.scores.loc['youden', 'sensitivity'],
+                'specificity': e.metrics.scores.loc['youden', 'specificity'],
             }
 
         # write scores
@@ -497,12 +509,7 @@ class CLI(MLCLI):
             target_col: 'N',
             'test': 'test',
         }
-
         df = self.df_all[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
-
-        # L = len(self.df_all)
-        # l = len(df)
-        # print(f'original:{L} new:{l} dropped:{L-l} scale:{l/L:.2f}')
 
         df_train = df[df['test'] < 1].drop(['test'], axis=1)
         df_test = df[df['test'] > 0].drop(['test'], axis=1)
@@ -516,53 +523,87 @@ class CLI(MLCLI):
         lr.fit(train_x, train_y)
         pred = lr.predict_proba(test_x)[:, 1]
 
-
         result = Result(test_y, pred)
         with open(J(a.dest, 'results', 'lr.pickle'), 'wb') as f:
             pickle.dump(result, f)
 
-        _plot([Experiment('lr', 'LR', result, Metrics.from_result(result))], a.dest, a.show)
-        return
+        _plot([Experiment.from_result('lr', 'LR', result)], a.value_only, a.dest, a.show)
+
+    def run_coef(self, a):
+        lr_cols = {
+            '造影超音波/リンパ節_B_1': 'b1',
+            '造影超音波/リンパ節_B_2': 'b2',
+            col_el_short: 'el_short',
+            # col_el_long: 'el_long',
+            # col_pl_short: 'pl_short',
+            # col_pl_long: 'pl_short',
+            target_col: 'N',
+        }
+        df = self.df_all[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
+        X = df.drop('N', axis=1)
+        Y = df['N']
+
+        lr = LogisticRegression(random_state=a.seed)
+        lr.fit(X, Y)
+        pred = lr.predict_proba(X)[:, 1]
+        result = Result(Y, pred)
+        m = Metrics.from_result(result)
+        # _plot([Experiment('lr', 'LR', result, m)], False, a.dest, True)
+        thres = m.scores.loc['youden', 'thres']
+
+        C = logit(thres)
 
         coef = lr.coef_[0]
         intercept = lr.intercept_[0]
 
-        metrics = Metrics.from_result(result)
-        thres = metrics.scores.loc['acc', 'thres']
-        intercept2 = thres - intercept - coef[0] - coef[1]
+        min_coef = min(coef)
+        coef = coef/min_coef
+        T = (C-intercept/min_coef)
+        pp = dict(zip(list(lr_cols.values())[:-1], coef))
 
-        print('coef=', coef)
-        print('intercept=', intercept)
-        print('thres=', thres)
+        print('pp', pp)
+        print('T', T)
+        # return
 
-        # target: b1=b2=True
-        coef2 = coef[[2,3]]
-        mini = np.min(coef2)
-        coef2 = coef2 / mini
-        intercept2 = intercept2 / mini
+        # coef = lr.coef_[0]
+        # intercept = lr.intercept_[0]
 
-        print('coef2', coef2)
-        print('intercept2', intercept2)
+        # metrics = Metrics.from_result(result)
+        # thres = metrics.scores.loc['acc', 'thres']
+        # intercept2 = thres - intercept - coef[0] - coef[1]
 
-        df2 = df[(df['b1']>0) & (df['b2']>0)].copy()
-        pred = df['pl_short'] * coef2[0] + df['el_short'] * coef2[0]
-        print(pred)
-        df2['pred_value'] = pred
-        df2['pred'] = pred > intercept2
+        # print('coef=', coef)
+        # print('intercept=', intercept)
+        # print('thres=', thres)
 
-        params = {
-            'coef_b1': coef[0],
-            'coef_b2': coef[1],
-            'coef_pl_short': coef[2],
-            'coef_el_short': coef[3],
-            'intercept': intercept,
-            'coef2_pl_short': coef2[0],
-            'coef2_el_short': coef2[1],
-            'intercept2': intercept,
-        }
+        # # target: b1=b2=True
+        # coef2 = coef[[2,3]]
+        # mini = np.min(coef2)
+        # coef2 = coef2 / mini
+        # intercept2 = intercept2 / mini
 
-        pd.DataFrame.from_dict({k:[v] for k, v in params.items()}).to_excel(J(a.dest, 'lr.xlsx'))
-        df2.to_excel(J(a.dest, 'lr_pred_b1b2.xlsx'))
+        # print('coef2', coef2)
+        # print('intercept2', intercept2)
+
+        # df2 = df[(df['b1']>0) & (df['b2']>0)].copy()
+        # pred = df['pl_short'] * coef2[0] + df['el_short'] * coef2[0]
+        # print(pred)
+        # df2['pred_value'] = pred
+        # df2['pred'] = pred > intercept2
+
+        # params = {
+        #     'coef_b1': coef[0],
+        #     'coef_b2': coef[1],
+        #     'coef_pl_short': coef[2],
+        #     'coef_el_short': coef[3],
+        #     'intercept': intercept,
+        #     'coef2_pl_short': coef2[0],
+        #     'coef2_el_short': coef2[1],
+        #     'intercept2': intercept,
+        # }
+
+        # pd.DataFrame.from_dict({k:[v] for k, v in params.items()}).to_excel(J(a.dest, 'lr.xlsx'))
+        # df2.to_excel(J(a.dest, 'lr_pred_b1b2.xlsx'))
 
 
     def run_corr(self, a):
@@ -628,40 +669,19 @@ class CLI(MLCLI):
     def run_demographic(self, a):
         num_to_ope_proc = [ 'Bt+SN', 'Bt+Ax', 'Bp+SN', 'Bp+Ax' ]
 
-        num_to_hormone_therapy = [
-            'なし', 'TAM (5y or 10y)',
-            'TAM+LHRHagonist', 'AI (5y or  10y)'
-        ]
-
-        num_to_chemo_therapy = [
-            'なし', 'EC/AC⇒PTX/DTX', 'ddEC/AC⇒P/D',
-            'TC, PTXonly', 'CMF', 'full regimen + Cape',
-        ]
+        num_to_hormone_therapy = [ 'なし', 'TAM (5y or 10y)', 'TAM+LHRHagonist', 'AI (5y or  10y)' ]
+        num_to_chemo_therapy = [ 'なし', 'EC/AC⇒PTX/DTX', 'ddEC/AC⇒P/D', 'TC, PTXonly', 'CMF', 'full regimen + Cape', ]
         num_to_nac = [ 'なし', '内分泌療法', '化学療法', '化学療法+HER', ]
-
         num_to_her2_therapy = [ 'なし', 'HER', 'HER+PER', 'HER+PER', 'T-DM1' ]
-
         num_to_radio = [ 'なし', '温存乳房照射', 'PMRT', ]
-
-        num_to_clinical_stage = [
-            'Stgae 0', 'Stage I', 'Stage 2A', 'Stage 2B',
-            'Stage 3A', 'Stage 3B', 'Stage 3C',
-        ]
+        num_to_clinical_stage = [ 'Stgae 0', 'Stage I', 'Stage 2A', 'Stage 2B', 'Stage 3A', 'Stage 3B', 'Stage 3C', ]
         num_to_tumor_type = [
-            'ductal carcimnoma in situ',
-            'invasive ductal carcinoma',
-            'invasive lobular carcinoma',
-            'mucinous carcinoma',
-            'other types',
+            'ductal carcimnoma in situ', 'invasive ductal carcinoma',
+            'invasive lobular carcinoma', 'mucinous carcinoma', 'other types',
         ]
-
         num_to_her2 = [
-            'negative: 0',
-            'negative: 1',
-            'netagive: 2_DISH or FISH (-)',
-            'positive: 2_DISH or FISH (+)',
-            '2_DISH or FISH unknown',
-            'positive',
+            'negative: 0', 'negative: 1', 'netagive: 2_DISH or FISH (-)',
+            'positive: 2_DISH or FISH (+)', '2_DISH or FISH unknown', 'positive',
         ]
 
         class CT(IntEnum):
