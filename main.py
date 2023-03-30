@@ -36,6 +36,10 @@ def odds(p):
 def logit(p):
     return np.log(odds(p))
 
+def specificity_score(y_true, y_pred):
+    tn, fp, fn, tp = skmetrics.confusion_matrix(y_true, y_pred).flatten()
+    return tn / (tn + fp)
+
 DEFAULT_REV = '20230330'
 
 
@@ -529,7 +533,7 @@ class CLI(MLCLI):
 
         _plot([Experiment.from_result('lr', 'LR', result)], a.value_only, a.dest, a.show)
 
-    def run_coef(self, a):
+    def run_lr_coef(self, a):
         lr_cols = {
             '造影超音波/リンパ節_B_1': 'b1',
             '造影超音波/リンパ節_B_2': 'b2',
@@ -558,52 +562,52 @@ class CLI(MLCLI):
 
         min_coef = min(coef)
         coef = coef/min_coef
-        T = (C-intercept/min_coef)
+        T = (C-intercept)/min_coef
         pp = dict(zip(list(lr_cols.values())[:-1], coef))
 
         print('pp', pp)
         print('T', T)
-        # return
 
-        # coef = lr.coef_[0]
-        # intercept = lr.intercept_[0]
+    def calc_scores(self, X, Y, params):
+        coef = params[:-1]
+        print(coef)
+        T = params[-1]
+        p = (np.sum((X * coef).values, axis=1) - T) > 0
+        y = Y.values
+        return {
+            'acc': skmetrics.accuracy_score(y_true=y, y_pred=p),
+            'recall': skmetrics.recall_score(y_true=y, y_pred=p),
+            'spec': specificity_score(y_true=y, y_pred=p),
+        }
 
-        # metrics = Metrics.from_result(result)
-        # thres = metrics.scores.loc['acc', 'thres']
-        # intercept2 = thres - intercept - coef[0] - coef[1]
+    def run_best_coef(self, a):
+        df_params = pd.DataFrame([
+            {'B1':9.87, 'B2': 8.3, 'short':1.0, 'threshold': 12.9 },
+            {'B1':10.0, 'B2': 8.0, 'short':1.0, 'threshold': 13.0 },
+            {'B1':10.0, 'B2':10.0, 'short':1.0, 'threshold': 13.0 },
+        ])
 
-        # print('coef=', coef)
-        # print('intercept=', intercept)
-        # print('thres=', thres)
+        lr_cols = {
+            '造影超音波/リンパ節_B_1': 'b1',
+            '造影超音波/リンパ節_B_2': 'b2',
+            col_el_short: 'el_short',
+            target_col: 'N',
+        }
+        df = self.df_all[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
+        X = df.drop('N', axis=1)
+        Y = df['N']
 
-        # # target: b1=b2=True
-        # coef2 = coef[[2,3]]
-        # mini = np.min(coef2)
-        # coef2 = coef2 / mini
-        # intercept2 = intercept2 / mini
+        scoress = []
+        for i, row in df_params.iterrows():
+            scoress.append(self.calc_scores(X, Y, row.values))
+        df_scores = pd.DataFrame(scoress)
 
-        # print('coef2', coef2)
-        # print('intercept2', intercept2)
+        df = pd.concat([df_params, df_scores], axis=1)
 
-        # df2 = df[(df['b1']>0) & (df['b2']>0)].copy()
-        # pred = df['pl_short'] * coef2[0] + df['el_short'] * coef2[0]
-        # print(pred)
-        # df2['pred_value'] = pred
-        # df2['pred'] = pred > intercept2
-
-        # params = {
-        #     'coef_b1': coef[0],
-        #     'coef_b2': coef[1],
-        #     'coef_pl_short': coef[2],
-        #     'coef_el_short': coef[3],
-        #     'intercept': intercept,
-        #     'coef2_pl_short': coef2[0],
-        #     'coef2_el_short': coef2[1],
-        #     'intercept2': intercept,
-        # }
-
-        # pd.DataFrame.from_dict({k:[v] for k, v in params.items()}).to_excel(J(a.dest, 'lr.xlsx'))
-        # df2.to_excel(J(a.dest, 'lr_pred_b1b2.xlsx'))
+        with pd.ExcelWriter(J(a.dest, 'clinical_scores.xlsx'), engine='xlsxwriter') as writer:
+            df.to_excel(writer, sheet_name='j')
+            df_params.to_excel(writer, sheet_name='params')
+            df_scores.to_excel(writer, sheet_name='scores')
 
 
     def run_corr(self, a):
@@ -708,7 +712,7 @@ class CLI(MLCLI):
             C('周術期治療_術前薬物療法', 'Neoadjuvant chemotherapy', CT.categorical, num_to_nac),
             C('周術期治療_ホルモン療法', 'Hormone therapy', CT.categorical, num_to_hormone_therapy),
             C('周術期治療_化学療法', 'Chemotherapy', CT.categorical, num_to_chemo_therapy),
-            C('周術期治療_抗HER2療法', 'HER2 therapy', CT.categorical, num_to_hormone_therapy),
+            C('周術期治療_抗HER2療法', 'HER2 therapy', CT.categorical, num_to_her2_therapy),
             C('周術期治療_術後放射線療法', 'Postoperative radiotherapy', CT.categorical, num_to_radio),
         ]
         pathological_cols = [
