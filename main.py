@@ -37,7 +37,7 @@ def logit(p):
     return np.log(odds(p))
 
 def specificity_score(y_true, y_pred):
-    tn, fp, fn, tp = skmetrics.confusion_matrix(y_true, y_pred).flatten()
+    tn, fp, __fn, __tp = skmetrics.confusion_matrix(y_true, y_pred).flatten()
     return tn / (tn + fp)
 
 DEFAULT_REV = '20230330'
@@ -400,7 +400,6 @@ class CLI(MLCLI):
         rev:str = DEFAULT_REV
         cnn_preds:str = Field('data/cnn-preds/p.xlsx', cli=('--cnn-preds', ))
         cnn_features:str = Field('data/cnn-preds/features', cli=('--cnn-features', ))
-        table_only:bool = Field(False, cli=('--table-only', ))
         show:bool = Field(False, cli=('--show', ))
         value_only:bool = Field(False, cli=('--value-only', ))
 
@@ -570,7 +569,6 @@ class CLI(MLCLI):
 
     def calc_scores(self, X, Y, params):
         coef = params[:-1]
-        print(coef)
         T = params[-1]
         p = (np.sum((X * coef).values, axis=1) - T) > 0
         y = Y.values
@@ -596,9 +594,10 @@ class CLI(MLCLI):
         df = self.df_all[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
         X = df.drop('N', axis=1)
         Y = df['N']
+        print(X)
 
         scoress = []
-        for i, row in df_params.iterrows():
+        for __i, row in df_params.iterrows():
             scoress.append(self.calc_scores(X, Y, row.values))
         df_scores = pd.DataFrame(scoress)
 
