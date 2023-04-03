@@ -172,13 +172,16 @@ def load_data(rev=DEFAULT_REV, split=None, cnn_preds:str=None, cnn_features:str=
     df = df.rename(columns={'研究番号': 'id'}).set_index('id')
 
     if split:
+        print(f'Split by {split}')
+        df_sp = pd.read_excel(split, index_col=0)
+        df_m = df.merge(df_sp, left_index=True, right_index=True)
+        assert len(df_m) == len(df), f'different len: {len(df_m)} vs {len(df)}'
+        df = df_m
+    else:
+        print('Split by random')
         df['test'] = False
         __df_train, df_test = train_test_split(df, shuffle=True, stratify=df[target_col])
         df.loc[df_test.index, 'test'] = True
-    else:
-        df_sp = pd.read_excel(sp, index=0)
-        df.merge(df_sp)
-        print('MEGED')
 
 
     df_p = None
@@ -410,7 +413,7 @@ def _plot(ee:list[Experiment], value_only:bool, dest:str, show:bool):
 class CLI(BaseCLI):
     class CommonArgs(define_ml_args(seed=44)):
         rev:str = DEFAULT_REV
-        split:str = 'data/train_test_split_20230330_44.xlsx'
+        split:str = ''
         cnn_preds:str = Field('data/cnn-preds/p.xlsx', cli=('--cnn-preds', ))
         cnn_features:str = Field('', cli=('--cnn-features', ))
         show:bool = Field(False, cli=('--show', ))
@@ -802,6 +805,9 @@ class CLI(BaseCLI):
 
     def run_i(self, a):
         pass
+
+    def run_export_split(self, a:CommonArgs):
+        self.df_all[['test']].to_excel(with_wrote(f'data/train_test_split_{a.rev}_{a.seed}.xlsx'), index=False)
 
 cli = CLI()
 if __name__ == '__main__':
