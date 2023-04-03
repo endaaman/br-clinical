@@ -98,7 +98,7 @@ cnn_preds_cols = [
 ]
 
 cnn_features_cols = [
-    f'CNN feaure {i}' for i in range(1280)
+    f'CNN feaure {i}' for i in range(10)
 ]
 
 @dataclass
@@ -113,7 +113,7 @@ COLUMN_CONDITIONS = [
     Condition(enhance_primary_cols, 'enhance/primary', 'ep'),
     Condition(enhance_lymph_cols, 'enhance/lymph', 'el'),
     Condition(cnn_preds_cols, 'enhance/cnn', 'ec'),
-    Condition(cnn_features_cols, 'enhance/features', 'ef'),
+    # Condition(cnn_features_cols, 'enhance/features', 'ef'),
 ]
 
 def gen_code_maps():
@@ -155,8 +155,10 @@ def codes_to_hex(codes):
 
 
 target_col = '臨床病期_N'
+# target_col = 'リンパ節/病理_metalabel'
 
-def load_data(rev=DEFAULT_REV, cnn_preds:str=None, cnn_features:str=None):
+
+def load_data(rev=DEFAULT_REV, split=None, cnn_preds:str=None, cnn_features:str=None):
     df = pd.read_excel(f'data/clinical_data_{rev}.xlsx', header=[0, 1, 2])
     df.columns = [
         '_'.join([
@@ -167,10 +169,17 @@ def load_data(rev=DEFAULT_REV, cnn_preds:str=None, cnn_features:str=None):
     ]
     df = df.dropna(subset=[target_col])
     df[target_col] = df[target_col] > 0
+    df = df.rename(columns={'研究番号': 'id'}).set_index('id')
 
-    df['test'] = False
-    __df_train, df_test = train_test_split(df, shuffle=True, stratify=df[target_col])
-    df.loc[df_test.index, 'test'] = True
+    if split:
+        df['test'] = False
+        __df_train, df_test = train_test_split(df, shuffle=True, stratify=df[target_col])
+        df.loc[df_test.index, 'test'] = True
+    else:
+        df_sp = pd.read_excel(sp, index=0)
+        df.merge(df_sp)
+        print('MEGED')
+
 
     df_p = None
     if cnn_preds:
@@ -189,10 +198,10 @@ def load_data(rev=DEFAULT_REV, cnn_preds:str=None, cnn_features:str=None):
                 ii.append(id)
             df_f = pd.DataFrame(index=ii, data=data, columns=cnn_features_cols)
             df = df.join(df_f)
-        else:
-            df[cnn_features_cols] = 0
-    else:
-        df[cnn_preds_cols[0]] = 0
+        # else:
+        #     df[cnn_features_cols] = 0
+    # else:
+    #     df[cnn_preds_cols[0]] = 0
 
     # df[col_pl_lt_el] = df[col_pl_short] < df[col_el_short]
     # df[col_el_ratio] = df[col_el_long] / df[col_el_short]
@@ -401,8 +410,9 @@ def _plot(ee:list[Experiment], value_only:bool, dest:str, show:bool):
 class CLI(BaseCLI):
     class CommonArgs(define_ml_args(seed=44)):
         rev:str = DEFAULT_REV
+        split:str = 'data/train_test_split_20230330_44.xlsx'
         cnn_preds:str = Field('data/cnn-preds/p.xlsx', cli=('--cnn-preds', ))
-        cnn_features:str = Field('data/cnn-preds/features', cli=('--cnn-features', ))
+        cnn_features:str = Field('', cli=('--cnn-features', ))
         show:bool = Field(False, cli=('--show', ))
         value_only:bool = Field(False, cli=('--value-only', ))
 
@@ -415,7 +425,7 @@ class CLI(BaseCLI):
             return J(self.dest, 'results')
 
     def pre_common(self, a):
-        self.df_all = load_data(a.rev, a.cnn_preds, a.cnn_features)
+        self.df_all = load_data(a.rev, a.split, a.cnn_preds, a.cnn_features)
         os.makedirs(J(a.dest, 'results'), exist_ok=True)
 
     def run_dump_train_test(self, a:CommonArgs):
