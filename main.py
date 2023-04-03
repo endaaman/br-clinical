@@ -21,7 +21,8 @@ import sklearn.metrics as skmetrics
 import lightgbm as lgb
 
 from endaaman import Timer, with_wrote
-from endaaman.ml import MLCLI, get_global_seed, define_ml_args
+from endaaman.cli import BaseCLI
+from endaaman.ml import get_global_seed, define_ml_args
 
 
 J = os.path.join
@@ -188,8 +189,10 @@ def load_data(rev=DEFAULT_REV, cnn_preds:str=None, cnn_features:str=None):
                 ii.append(id)
             df_f = pd.DataFrame(index=ii, data=data, columns=cnn_features_cols)
             df = df.join(df_f)
+        else:
+            df[cnn_features_cols] = 0
     else:
-        df[cnn_preds_cols[0]] = np.nan
+        df[cnn_preds_cols[0]] = 0
 
     # df[col_pl_lt_el] = df[col_pl_short] < df[col_el_short]
     # df[col_el_ratio] = df[col_el_long] / df[col_el_short]
@@ -395,7 +398,7 @@ def _plot(ee:list[Experiment], value_only:bool, dest:str, show:bool):
         plt.show()
 
 
-class CLI(MLCLI):
+class CLI(BaseCLI):
     class CommonArgs(define_ml_args(seed=44)):
         rev:str = DEFAULT_REV
         cnn_preds:str = Field('data/cnn-preds/p.xlsx', cli=('--cnn-preds', ))
