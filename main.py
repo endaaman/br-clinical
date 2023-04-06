@@ -154,8 +154,9 @@ def codes_to_hex(codes):
 
 
 
-target_col = '臨床病期_N'
-# target_col = 'リンパ節/病理_metalabel'
+# target_col = '臨床病期_N'
+target_col = 'リンパ節/病理_metalabel'
+TARGET_THRES = 0
 
 
 def load_data(rev=DEFAULT_REV, split=None, cnn_preds:str=None, cnn_features:str=None):
@@ -168,14 +169,16 @@ def load_data(rev=DEFAULT_REV, split=None, cnn_preds:str=None, cnn_features:str=
         for c in df.columns
     ]
     df = df.dropna(subset=[target_col])
-    df[target_col] = df[target_col] > 0
+    df[target_col] = df[target_col] > TARGET_THRES
     df = df.rename(columns={'研究番号': 'id'}).set_index('id')
 
     if split:
         print(f'Split by {split}')
         df_sp = pd.read_excel(split, index_col=0)
-        df_m = df.merge(df_sp, left_index=True, right_index=True)
+        assert len(df) >= len(df_sp), f'Invalid splitter len: {len(df_sp)} vs {len(df)}'
+        df_m = pd.merge(df, df_sp, left_index=True, right_index=True, how='left')
         assert len(df_m) == len(df), f'different len: {len(df_m)} vs {len(df)}'
+        # df = df_m.fillna({'test': False})
         df = df_m
     else:
         print('Split by random')
@@ -183,24 +186,24 @@ def load_data(rev=DEFAULT_REV, split=None, cnn_preds:str=None, cnn_features:str=
         __df_train, df_test = train_test_split(df, shuffle=True, stratify=df[target_col])
         df.loc[df_test.index, 'test'] = True
 
-
     df_p = None
     if cnn_preds:
         df_p = pd.read_excel(cnn_preds)
         df_p = df_p[df_p['id'] > 0]
         df_m = df_p \
+            .drop_duplicates(subset='id', keep='first') \
             .set_index('id')[['pred']] \
             .rename(columns={'pred': cnn_preds_cols[0]})
-        df = df.join(df_m)
-        if cnn_features:
-            ii = []
-            data = []
-            for id, row in df_p.iterrows():
-                feaure = np.load(J(cnn_features, f'{row["name"]}.npy'))
-                data.append(feaure)
-                ii.append(id)
-            df_f = pd.DataFrame(index=ii, data=data, columns=cnn_features_cols)
-            df = df.join(df_f)
+        df = pd.merge(df, df_m, left_index=True, right_index=True, how='left')
+        # if cnn_features:
+        #     ii = []
+        #     data = []
+        #     for id, row in df_p.iterrows():
+        #         feaure = np.load(J(cnn_features, f'{row["name"]}.npy'))
+        #         data.append(feaure)
+        #         ii.append(id)
+        #     df_f = pd.DataFrame(index=ii, data=data, columns=cnn_features_cols)
+        #     df = df.join(df_f)
         # else:
         #     df[cnn_features_cols] = 0
     # else:
@@ -510,7 +513,7 @@ class CLI(BaseCLI):
         # write scores
         df_score = pd.DataFrame(scores).transpose()
         df_score = df_score.sort_values(by='auc', ascending=False)
-        with pd.ExcelWriter(J(a.dest, 'scores.xlsx'), engine='xlsxwriter') as writer:
+        with pd.ExcelWriter(with_wrote(J(a.dest, 'scores.xlsx')), engine='xlsxwriter') as writer:
             df_score.to_excel(writer, sheet_name='scores')
             num_format = writer.book.add_format({'num_format': '#,##0.000'})
             worksheet = writer.sheets['scores']
@@ -807,7 +810,7 @@ class CLI(BaseCLI):
         pass
 
     def run_export_split(self, a:CommonArgs):
-        self.df_all[['test']].to_excel(with_wrote(f'data/train_test_split_{a.rev}_{a.seed}.xlsx'), index=False)
+        self.df_all[['test']].to_excel(with_wrote(f'data/train_test_split_{a.rev}_{a.seed}.xlsx'))
 
 cli = CLI()
 if __name__ == '__main__':
