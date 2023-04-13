@@ -41,47 +41,47 @@ def specificity_score(y_true, y_pred):
     tn, fp, __fn, __tp = skmetrics.confusion_matrix(y_true, y_pred).flatten()
     return tn / (tn + fp)
 
-DEFAULT_REV = '20230330'
+DEFAULT_REV = '20230410'
 
 
 plain_primary_cols = [
     '非造影超音波/原発巣_BIRADS',
-    '非造影超音波/原発巣_lesion(0,1)',
-    '非造影超音波/原発巣_mass(0,1)',
-    '非造影超音波/原発巣_浸潤径(mm)_最大径(長径)',
-    '非造影超音波/原発巣_浸潤径(mm)_短径',
-    '非造影超音波/原発巣_浸潤径(mm)_第3軸径',
-    '非造影超音波/原発巣_乳管内進展(mm)_最大径(長径)',
-    '非造影超音波/原発巣_乳管内進展(mm)_短径',
-    '非造影超音波/原発巣_乳管内進展(mm)_第3軸径',
+    '非造影超音波/原発巣_lesion',
+    '非造影超音波/原発巣_mass',
+    '非造影超音波/原発巣_浸潤径_最大径',
+    '非造影超音波/原発巣_浸潤径_短径',
+    '非造影超音波/原発巣_浸潤径_第3軸径',
+    '非造影超音波/原発巣_乳管内進展_最大径',
+    '非造影超音波/原発巣_乳管内進展_短径',
+    '非造影超音波/原発巣_乳管内進展_第3軸径',
 ]
 
 enhance_primary_cols = [
-    '造影超音波/原発巣_lesion(0,1)',
-    '造影超音波/原発巣_mass(0,1)',
+    '造影超音波/原発巣_lesion',
+    '造影超音波/原発巣_mass',
     '造影超音波/原発巣_TIC_動脈層',
     '造影超音波/原発巣_TIC_静脈層',
-    *[f'造影超音波/原発巣_iflesion=1_A{i}' for i in range(1, 9)],
-    '造影超音波/原発巣_浸潤径(mm)_最大径(長径)',
-    '造影超音波/原発巣_浸潤径(mm)_短径',
-    '造影超音波/原発巣_浸潤径(mm)_第3軸径',
-    '造影超音波/原発巣_乳管内進展(mm)_最大径(長径)',
-    '造影超音波/原発巣_乳管内進展(mm)_短径',
-    '造影超音波/原発巣_乳管内進展(mm)_第3軸径',
+    *[f'造影超音波/原発巣_TIC_A{i}' for i in range(1, 9)],
+    '造影超音波/原発巣_浸潤径_最大径',
+    '造影超音波/原発巣_浸潤径_短径',
+    '造影超音波/原発巣_浸潤径_第3軸径',
+    '造影超音波/原発巣_乳管内進展_最大径',
+    '造影超音波/原発巣_乳管内進展_短径',
+    '造影超音波/原発巣_乳管内進展_第3軸径',
 ]
 
 plain_lymph_cols = [
     *[f'非造影超音波/リンパ節_term_{i}' for i in range(1, 9)],
-    '非造影超音波/リンパ節_mass(0,1)',
-    col_pl_long:='非造影超音波/リンパ節_lymphsize_最大径(長径)',
+    '非造影超音波/リンパ節_mass',
+    col_pl_long:='非造影超音波/リンパ節_lymphsize_最大径',
     col_pl_short:='非造影超音波/リンパ節_lymphsize_短径',
 ]
 
 enhance_lymph_cols = [
     '造影超音波/リンパ節_TIC_動脈層',
     '造影超音波/リンパ節_TIC_静脈層',
-    '造影超音波/リンパ節_mass(0,1)',
-    col_el_long:='造影超音波/リンパ節_lymphsize_最大径(長径)',
+    '造影超音波/リンパ節_mass',
+    col_el_long:='造影超音波/リンパ節_lymphsize_最大径',
     col_el_short:='造影超音波/リンパ節_lymphsize_短径',
     *[f'造影超音波/リンパ節_term_{i}' for i in range(1, 9)],
     *[f'造影超音波/リンパ節_B_{i}' for i in range(1, 6)],
@@ -156,7 +156,7 @@ def codes_to_hex(codes):
 
 # target_col = '臨床病期_N'
 target_col = 'リンパ節/病理_metalabel'
-TARGET_THRES = 0
+TARGET_THRES = 1
 
 
 def load_data(rev=DEFAULT_REV, split=None, cnn_preds:str=None, cnn_features:str=None):
@@ -793,15 +793,11 @@ class CLI(BaseCLI):
                             'len': len(x),
                             'se': np.std(x, ddof=1) / np.sqrt(len(x)),
                         }
-
-
             data[t] = pd.DataFrame(data_by_t).transpose()
-
 
         with pd.ExcelWriter(J(a.dest, 'demographic.xlsx'), engine='xlsxwriter') as writer:
             for t, df in data.items():
                 df.to_excel(writer, sheet_name=t)
-
             for t, df in dfs.items():
                 df.to_excel(writer, sheet_name=f'{t}(data)')
 
