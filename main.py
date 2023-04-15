@@ -156,10 +156,9 @@ def codes_to_hex(codes):
 
 # target_col = '臨床病期_N'
 target_col = 'リンパ節/病理_metalabel'
-TARGET_THRES = 1
 
 
-def load_data(rev=DEFAULT_REV, split=None, cnn_preds:str=None, cnn_features:str=None):
+def load_data(rev=DEFAULT_REV, target_thres=0, split=None, cnn_preds:str=None, cnn_features:str=None):
     df = pd.read_excel(f'data/clinical_data_{rev}.xlsx', header=[0, 1, 2])
     df.columns = [
         '_'.join([
@@ -169,7 +168,7 @@ def load_data(rev=DEFAULT_REV, split=None, cnn_preds:str=None, cnn_features:str=
         for c in df.columns
     ]
     df = df.dropna(subset=[target_col])
-    df[target_col] = df[target_col] > TARGET_THRES
+    df[target_col] = df[target_col] > target_thres
     df = df.rename(columns={'研究番号': 'id'}).set_index('id')
 
     if split:
@@ -417,6 +416,7 @@ class CLI(BaseCLI):
     class CommonArgs(define_ml_args(seed=44)):
         rev:str = DEFAULT_REV
         split:str = ''
+        thres:int = 0
         cnn_preds:str = Field('data/cnn-preds/p.xlsx', cli=('--cnn-preds', ))
         cnn_features:str = Field('', cli=('--cnn-features', ))
         show:bool = Field(False, cli=('--show', ))
@@ -424,18 +424,18 @@ class CLI(BaseCLI):
 
         @property
         def dest(self):
-            return f'out{self.rev}_{self.seed}'
+            return f'out{self.rev}_{self.seed}_t{self.thres}'
 
         @property
         def src(self):
             return J(self.dest, 'results')
 
     def pre_common(self, a):
-        self.df_all = load_data(a.rev, a.split, a.cnn_preds, a.cnn_features)
+        self.df_all = load_data(a.rev, a.thres,  a.split, a.cnn_preds, a.cnn_features)
         os.makedirs(J(a.dest, 'results'), exist_ok=True)
 
     def run_dump_train_test(self, a:CommonArgs):
-        df = self.df_all.rename(columns={'研究番号': 'id'})[['id', 'test']]
+        df = self.df_all[['id', 'test']]
         # df['test'] = df['test'].astype('int')
         p = J(a.dest, f'train_test_{a.seed}_{a.rev}.xlsx')
         df.to_excel(p, index=False)
