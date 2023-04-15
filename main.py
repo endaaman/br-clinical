@@ -26,7 +26,7 @@ from endaaman.ml import get_global_seed, define_ml_args
 
 
 J = os.path.join
-sns.set(style='whitegrid')
+sns.set(style='white')
 
 def sigmoid(a):
     return 1 / (1 + math.e**-a)
@@ -42,6 +42,8 @@ def specificity_score(y_true, y_pred):
     return tn / (tn + fp)
 
 DEFAULT_REV = '20230410'
+# 27, 30, 32, 33, 36, 40, 68, 71, 95
+DEFAULT_SEED = 36
 
 
 plain_primary_cols = [
@@ -85,10 +87,8 @@ enhance_lymph_cols = [
     col_el_short:='造影超音波/リンパ節_lymphsize_短径',
     *[f'造影超音波/リンパ節_term_{i}' for i in range(1, 9)],
     *[f'造影超音波/リンパ節_B_{i}' for i in range(1, 6)],
-
     # col_pl_lt_el:='el short < el short',
     # col_el_ratio:='el long / el short',
-
     # '造影超音波/リンパ節_PI_7',
     # '造影超音波/リンパ節_PI_実数',
 ]
@@ -389,15 +389,19 @@ class GBMExperiment(Experiment):
 
 
 
-def _plot(ee:list[Experiment], value_only:bool, dest:str, show:bool):
+def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
+    ee = sorted(ee, key=lambda e: -e.metrics.auc)
+    legends = legends.split(':')
+    if len(legends) != len(ee):
+        legends = [e.label for e in ee]
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111)
-    for e in sorted(ee, key=lambda e: -e.metrics.auc):
+    for e, legend in zip(ee, legends):
         m = e.metrics
         value = f'{m.auc*100:.1f}% ({m.ci[0]*100:.1f}-{m.ci[1]*100:.1f}%)'
         ax.plot(
             m.fpr, m.tpr,
-            label=value if value_only else f'{e.label}={value}'
+            label=f'{legend}={value}',
         )
 
     ax.set_ylabel('tpr')
@@ -413,14 +417,14 @@ def _plot(ee:list[Experiment], value_only:bool, dest:str, show:bool):
 
 
 class CLI(BaseCLI):
-    class CommonArgs(define_ml_args(seed=44)):
+    class CommonArgs(define_ml_args(seed=DEFAULT_SEED)):
         rev:str = DEFAULT_REV
         split:str = ''
         thres:int = 0
         cnn_preds:str = Field('data/cnn-preds/p.xlsx', cli=('--cnn-preds', ))
         cnn_features:str = Field('', cli=('--cnn-features', ))
         show:bool = Field(False, cli=('--show', ))
-        value_only:bool = Field(False, cli=('--value-only', ))
+        legends:str = Field('', cli=('--legends', ))
 
         @property
         def dest(self):
@@ -443,7 +447,7 @@ class CLI(BaseCLI):
 
 
     class GbmArgs(CommonArgs):
-        codes_to_plot:str = Field('111100:110000', cli=('--code', ))
+        codes_to_plot:str = Field('11110:11000', cli=('--code', ))
         reduction:str = 'median'
 
     def run_gbm(self, a:GbmArgs):
@@ -475,7 +479,7 @@ class CLI(BaseCLI):
                 worksheet.set_column(1, 6, None, num_format)
 
         ee_to_plot = [e for e in experiments if ('all' in codes_to_plot or e.code in codes_to_plot)]
-        _plot(ee_to_plot, a.value_only, a.dest, a.show)
+        _plot(ee_to_plot, a.legends, a.dest, a.show)
 
 
     class PlotArgs(CommonArgs):
@@ -490,7 +494,7 @@ class CLI(BaseCLI):
             paths = [J(a.src, f'{code}.pickle') for code in codes_to_plot]
 
         ee = [Experiment.from_file(p) for p in paths]
-        _plot(ee, a.value_only, a.dest, a.show)
+        _plot(ee, a.legends, a.dest, a.show)
 
 
     def run_scores(self, a):
@@ -640,7 +644,7 @@ class CLI(BaseCLI):
             col_el_long: 'long axis(enhance lymph)',
             col_pl_short: 'short axis(plain lymph)',
             col_pl_long: 'long axis(plain lymph)',
-            target_col: 'N',
+            target_col: 'N meta',
         }
 
         df = self.df_all[list(cols.keys())].dropna().rename(columns=cols)
@@ -800,10 +804,6 @@ class CLI(BaseCLI):
                 df.to_excel(writer, sheet_name=t)
             for t, df in dfs.items():
                 df.to_excel(writer, sheet_name=f'{t}(data)')
-
-
-    def run_i(self, a):
-        pass
 
     def run_export_split(self, a:CommonArgs):
         self.df_all[['test']].to_excel(with_wrote(f'data/train_test_split_{a.rev}_{a.seed}.xlsx'))
