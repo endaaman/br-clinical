@@ -63,8 +63,8 @@ enhance_primary_cols = [
     '造影超音波/原発巣_mass',
     '造影超音波/原発巣_TIC_動脈層',
     '造影超音波/原発巣_TIC_静脈層',
-    *[f'造影超音波/原発巣_TIC_A{i}' for i in range(1, 9)],
-    '造影超音波/原発巣_浸潤径_最大径',
+    *[f'造影超音波/原発巣_TIC_A{i}' for i in range(1, 10)],
+    col_ep_long := '造影超音波/原発巣_浸潤径_最大径',
     '造影超音波/原発巣_浸潤径_短径',
     '造影超音波/原発巣_浸潤径_第3軸径',
     '造影超音波/原発巣_乳管内進展_最大径',
@@ -73,7 +73,7 @@ enhance_primary_cols = [
 ]
 
 plain_lymph_cols = [
-    *[f'非造影超音波/リンパ節_term_{i}' for i in range(1, 9)],
+    *[f'非造影超音波/リンパ節_term_{i}' for i in range(1, 10)],
     '非造影超音波/リンパ節_mass',
     col_pl_long:='非造影超音波/リンパ節_lymphsize_最大径',
     col_pl_short:='非造影超音波/リンパ節_lymphsize_短径',
@@ -85,8 +85,8 @@ enhance_lymph_cols = [
     '造影超音波/リンパ節_mass',
     col_el_long:='造影超音波/リンパ節_lymphsize_最大径',
     col_el_short:='造影超音波/リンパ節_lymphsize_短径',
-    *[f'造影超音波/リンパ節_term_{i}' for i in range(1, 9)],
-    *[f'造影超音波/リンパ節_B_{i}' for i in range(1, 6)],
+    *[f'造影超音波/リンパ節_term_{i}' for i in range(1, 10)],
+    *[f'造影超音波/リンパ節_B_{i}' for i in range(1, 7)],
     # col_pl_lt_el:='el short < el short',
     # col_el_ratio:='el long / el short',
     # '造影超音波/リンパ節_PI_7',
@@ -155,7 +155,8 @@ def codes_to_hex(codes):
 
 
 # target_col = '臨床病期_N'
-target_col = 'リンパ節/病理_metalabel'
+target_base_col = 'リンパ節/病理_metalabel'
+target_col = 'target'
 
 
 def load_data(rev=DEFAULT_REV, target_thres=0, split=None, cnn_preds:str=None, cnn_features:str=None):
@@ -167,8 +168,8 @@ def load_data(rev=DEFAULT_REV, target_thres=0, split=None, cnn_preds:str=None, c
         ])
         for c in df.columns
     ]
-    df = df.dropna(subset=[target_col])
-    df[target_col] = df[target_col] > target_thres
+    df = df.dropna(subset=[target_base_col])
+    df[target_col] = df[target_base_col] > target_thres
     df = df.rename(columns={'研究番号': 'id'}).set_index('id')
 
     if split:
@@ -392,7 +393,7 @@ class GBMExperiment(Experiment):
 def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
     ee = sorted(ee, key=lambda e: -e.metrics.auc)
     legends = legends.split(':')
-    if len(legends) != len(ee):
+    if not (all(legends) and len(legends) == len(ee)):
         legends = [e.label for e in ee]
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111)
@@ -404,8 +405,8 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
             label=f'{legend}={value}',
         )
 
-    ax.set_ylabel('tpr')
-    ax.set_xlabel('fpr')
+    ax.set_ylabel('Sensitivity')
+    ax.set_xlabel('1 - Specificity')
     plt.legend(loc='lower right')
 
     suffix = codes_to_hex([e.code for e in ee])
@@ -526,13 +527,15 @@ class CLI(BaseCLI):
 
     def run_lr(self, a):
         lr_cols = {
-            '造影超音波/リンパ節_B_1': 'b1',
+            # '造影超音波/リンパ節_B_1': 'b1',
             '造影超音波/リンパ節_B_2': 'b2',
+            '造影超音波/リンパ節_B_5': 'b5',
+            col_ep_long: 'ep_long',
             # col_pl_short: 'pl_short',
-            col_el_short: 'el_short',
+            # col_el_short: 'el_short',
             # col_el_long: 'el_long',
             # col_pl_long: 'pl_long',
-            target_col: 'N',
+            target_col: 'target',
             'test': 'test',
         }
         df = self.df_all[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
@@ -540,10 +543,10 @@ class CLI(BaseCLI):
         df_train = df[df['test'] < 1].drop(['test'], axis=1)
         df_test = df[df['test'] > 0].drop(['test'], axis=1)
 
-        train_x = df_train.drop(['N'], axis=1)
-        train_y = df_train['N']
-        test_x = df_test.drop(['N'], axis=1)
-        test_y = df_test['N']
+        train_x = df_train.drop(['target'], axis=1)
+        train_y = df_train['target']
+        test_x = df_test.drop(['target'], axis=1)
+        test_y = df_test['target']
 
         lr = LogisticRegression(random_state=a.seed)
         lr.fit(train_x, train_y)
@@ -553,29 +556,34 @@ class CLI(BaseCLI):
         with open(J(a.dest, 'results', 'lr.pickle'), 'wb') as f:
             pickle.dump(result, f)
 
-        _plot([Experiment.from_result('lr', 'LR', result)], a.value_only, a.dest, a.show)
+        _plot([Experiment.from_result('lr', 'LR', result)], a.legends, a.dest, a.show)
 
     def run_lr_coef(self, a):
         lr_cols = {
             '造影超音波/リンパ節_B_1': 'b1',
             '造影超音波/リンパ節_B_2': 'b2',
-            col_el_short: 'el_short',
+            # '造影超音波/リンパ節_B_3': 'b3',
+            # '造影超音波/リンパ節_B_4': 'b4',
+            '造影超音波/リンパ節_B_5': 'b5',
+            # col_pl_long: 'pl_long',
+            # col_el_long: 'el_short',
             # col_el_long: 'el_long',
             # col_pl_short: 'pl_short',
             # col_pl_long: 'pl_short',
-            target_col: 'N',
+            target_col: 'target',
         }
         df = self.df_all[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
-        X = df.drop('N', axis=1)
-        Y = df['N']
+        X = df.drop('target', axis=1)
+        Y = df['target']
 
         lr = LogisticRegression(random_state=a.seed)
         lr.fit(X, Y)
         pred = lr.predict_proba(X)[:, 1]
         result = Result(Y, pred)
-        m = Metrics.from_result(result)
+        m:Metrics = Metrics.from_result(result)
+        print(m.auc)
         # _plot([Experiment('lr', 'LR', result, m)], False, a.dest, True)
-        thres = m.scores.loc['youden', 'thres']
+        thres = m.scores.loc['top-left', 'thres']
 
         C = logit(thres)
 
@@ -603,20 +611,44 @@ class CLI(BaseCLI):
 
     def run_best_coef(self, a):
         df_params = pd.DataFrame([
-            {'B1':9.87, 'B2': 8.3, 'short':1.0, 'threshold': 12.9 },
-            {'B1':10.0, 'B2': 8.0, 'short':1.0, 'threshold': 13.0 },
-            {'B1':10.0, 'B2':10.0, 'short':1.0, 'threshold': 13.0 },
+            # {'B2': 8.74, 'B5': 9.61, 'short':1.0, 'threshold': 7.1 },
+            # {'B2': 9.00, 'B5':10.00, 'short':1.0, 'threshold': 7.0 },
+            # {'B2':10.00, 'B5':10.00, 'short':1.0, 'threshold': 7.0 },
+
+            # {'B2': 1.0, 'B5': 1.15, 'threshold': 1.0},
+            # {'B2': 1.0, 'B5': 1.00, 'threshold': 1.0 },
+            # {'B2': 1.0, 'B5': 1.01, 'threshold': 1.0 },
+            # {'B2': 0.0, 'B5': 1.01, 'threshold': 1.0 },
+            # {'B2': 1.0, 'B5': 1.00, 'threshold': 1.1 },
+
+            { 'B1': 1.0, 'B2': 1.0, 'B5': 1.0, 'threshold': 2.9 },
+            { 'B1': 1.0, 'B2': 1.0, 'B5': 1.0, 'threshold': 1.9 },
+            { 'B1': 1.0, 'B2': 1.0, 'B5': 1.0, 'threshold': 0.9 },
+
+            { 'B1': 1.0, 'B2': 1.0, 'B5': 0.0, 'threshold': 1.9 },
+            { 'B1': 1.0, 'B2': 0.0, 'B5': 1.0, 'threshold': 1.9 },
+            { 'B1': 0.0, 'B2': 1.0, 'B5': 1.0, 'threshold': 1.9 },
+
+            { 'B1': 1.0, 'B2': 1.0, 'B5': 0.0, 'threshold': 0.9 },
+            { 'B1': 1.0, 'B2': 0.0, 'B5': 1.0, 'threshold': 0.9 },
+            { 'B1': 0.0, 'B2': 1.0, 'B5': 1.0, 'threshold': 0.9 },
+
+            { 'B1': 1.0, 'B2': 0.0, 'B5': 0.0, 'threshold': 0.9 },
+            { 'B1': 0.0, 'B2': 1.0, 'B5': 0.0, 'threshold': 0.9 },
+            { 'B1': 0.0, 'B2': 0.0, 'B5': 1.0, 'threshold': 0.9 },
         ])
 
         lr_cols = {
             '造影超音波/リンパ節_B_1': 'b1',
             '造影超音波/リンパ節_B_2': 'b2',
-            col_el_short: 'el_short',
-            target_col: 'N',
+            '造影超音波/リンパ節_B_5': 'b5',
+            # col_el_short: 'el_short',
+            # col_ep_long: 'ep_long',
+            target_col: 'target',
         }
         df = self.df_all[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
-        X = df.drop('N', axis=1)
-        Y = df['N']
+        X = df.drop('target', axis=1)
+        Y = df['target']
         print(X)
 
         scoress = []
@@ -644,7 +676,7 @@ class CLI(BaseCLI):
             col_el_long: 'long axis(enhance lymph)',
             col_pl_short: 'short axis(plain lymph)',
             col_pl_long: 'long axis(plain lymph)',
-            target_col: 'N meta',
+            target_col: 'target',
         }
 
         df = self.df_all[list(cols.keys())].dropna().rename(columns=cols)
@@ -739,11 +771,11 @@ class CLI(BaseCLI):
         ]
         pathological_cols = [
             C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_Tummortype', 'tumor type', CT.categorical, num_to_tumor_type),
-            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_浸潤(1,0)', 'invasion', CT.binary),
-            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_ER(0-100)', 'ER', CT.numerical),
-            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_PR(0-100)', 'PR', CT.numerical),
+            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_浸潤', 'invasion', CT.binary),
+            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_ER', 'ER', CT.numerical),
+            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_PR', 'PR', CT.numerical),
             C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_HER2', 'HER2', CT.categorical, num_to_her2),
-            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_Ki-67(0-100)', 'Ki-67', CT.numerical),
+            C('原発巣/病理学検査(生検検体＞手術検体にて把握可能な項目)_Ki-67', 'Ki-67', CT.numerical),
             C('原発巣/病理学検査(切除検体にてのみ把握可能な項目)_NG', 'Nuclear grade', CT.categorical, ['0', '1', '2', '3']),
             C('原発巣/病理学検査(切除検体にてのみ把握可能な項目)_HG', 'WHO grade', CT.categorical, ['0', '1', '2', '3']),
         ]
@@ -757,8 +789,12 @@ class CLI(BaseCLI):
             for c in plain_primary_cols + plain_lymph_cols + enhance_primary_cols + enhance_lymph_cols
         ]
 
-        all_cols = patient_cols + clinical_stage_cols + therapy_cols + pathological_cols + prognosis_cols + features_cols
+        target_cols = [
+            C(target_base_col, 'meta label', CT.categorical, ['0', '1', '1mi', '2', '3']),
+            C(target_col, 'meta > 0', CT.binary),
+        ]
 
+        all_cols = patient_cols + clinical_stage_cols + therapy_cols + pathological_cols + prognosis_cols + features_cols + target_cols
 
         df_base = self.df_all[[c.old_name for c in all_cols] + ['test']].rename(columns={c.old_name: c.name for c in all_cols})
         dfs = {
@@ -776,17 +812,19 @@ class CLI(BaseCLI):
             for name in df.columns:
                 col = cols_by_name[name]
                 values = df[name].replace('-', np.nan).dropna().values
+                value_with_target = df[[name, target_cols[1][1]]].replace('-', np.nan).dropna()
                 x = values
                 data_by_t[name] = {
                     'mean': np.mean(x),
                     'sum': np.sum(x),
                     'len': len(x),
                     'se': np.std(x, ddof=1) / np.sqrt(len(x)),
+                    'corr': value_with_target.corr().values[0, 1],
                 }
                 if t == 'test':
-                    values_to_compare = dfs['train'][name].replace('-', np.nan).dropna().values
-                    __t, p  = st.mannwhitneyu(values_to_compare, values)
-                    data_by_t[name]['p'] = p
+                    values_on_train = dfs['train'][name].replace('-', np.nan).dropna().values
+                    __t, p  = st.mannwhitneyu(values_on_train, values)
+                    data_by_t[name]['p vs train'] = p
 
                 if col.type == CT.categorical:
                     for i, label in enumerate(col.map):
@@ -807,6 +845,9 @@ class CLI(BaseCLI):
 
     def run_export_split(self, a:CommonArgs):
         self.df_all[['test']].to_excel(with_wrote(f'data/train_test_split_{a.rev}_{a.seed}.xlsx'))
+
+    def run_i(self, a):
+        pass
 
 cli = CLI()
 if __name__ == '__main__':
