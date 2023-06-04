@@ -271,7 +271,8 @@ def train_gbm(df, num_folds=5, reduction='median'):
 
         importances.append(model.feature_importance(importance_type='gain'))
 
-    importance = pd.DataFrame(columns=df_train.columns[:-1], data=importances)
+    cc = list(set(df.columns) - {'treatment', 'test'})
+    importance = pd.DataFrame(columns=cc, data=importances)
     mean = importance.mean(axis=0)
     importance = importance.transpose()
     importance['mean'] = mean
