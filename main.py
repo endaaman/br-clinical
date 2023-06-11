@@ -21,8 +21,7 @@ import sklearn.metrics as skmetrics
 import lightgbm as lgb
 
 from endaaman import Timer, with_wrote
-from endaaman.cli import BaseCLI
-from endaaman.ml import get_global_seed, define_ml_args
+from endaaman.ml import get_global_seed, BaseMLArgs, BaseMLCLI
 
 
 J = os.path.join
@@ -271,7 +270,7 @@ def train_gbm(df, num_folds=5, reduction='median'):
 
         importances.append(model.feature_importance(importance_type='gain'))
 
-    cc = list(set(df.columns) - {'treatment', 'test'})
+    cc = list(set(df.columns) - {target_col, 'test'})
     importance = pd.DataFrame(columns=cc, data=importances)
     mean = importance.mean(axis=0)
     importance = importance.transpose()
@@ -418,8 +417,9 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
         plt.show()
 
 
-class CLI(BaseCLI):
-    class CommonArgs(define_ml_args(seed=DEFAULT_SEED)):
+class CLI(BaseMLCLI):
+    class CommonArgs(BaseMLArgs):
+        seed:int = 36
         rev:str = DEFAULT_REV
         split:str = ''
         thres:int = 0
@@ -528,10 +528,12 @@ class CLI(BaseCLI):
 
     def run_lr(self, a):
         lr_cols = {
+            '造影超音波/リンパ節_term_2': 't2',
+            '造影超音波/リンパ節_term_4': 't4',
             # '造影超音波/リンパ節_B_1': 'b1',
             '造影超音波/リンパ節_B_2': 'b2',
-            '造影超音波/リンパ節_B_5': 'b5',
-            col_ep_long: 'ep_long',
+            # '造影超音波/リンパ節_B_5': 'b5',
+            # col_ep_long: 'ep_long',
             # col_pl_short: 'pl_short',
             # col_el_short: 'el_short',
             # col_el_long: 'el_long',
@@ -561,11 +563,13 @@ class CLI(BaseCLI):
 
     def run_lr_coef(self, a):
         lr_cols = {
-            '造影超音波/リンパ節_B_1': 'b1',
+            '造影超音波/リンパ節_term_2': 't2',
+            '造影超音波/リンパ節_term_4': 't4',
+            # '造影超音波/リンパ節_B_1': 'b1',
             '造影超音波/リンパ節_B_2': 'b2',
             # '造影超音波/リンパ節_B_3': 'b3',
             # '造影超音波/リンパ節_B_4': 'b4',
-            '造影超音波/リンパ節_B_5': 'b5',
+            # '造影超音波/リンパ節_B_5': 'b5',
             # col_pl_long: 'pl_long',
             # col_el_long: 'el_short',
             # col_el_long: 'el_long',
@@ -574,6 +578,7 @@ class CLI(BaseCLI):
             target_col: 'target',
         }
         df = self.df_all[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
+        print(df)
         X = df.drop('target', axis=1)
         Y = df['target']
 
@@ -622,27 +627,31 @@ class CLI(BaseCLI):
             # {'B2': 0.0, 'B5': 1.01, 'threshold': 1.0 },
             # {'B2': 1.0, 'B5': 1.00, 'threshold': 1.1 },
 
-            { 'B1': 1.0, 'B2': 1.0, 'B5': 1.0, 'threshold': 2.9 },
-            { 'B1': 1.0, 'B2': 1.0, 'B5': 1.0, 'threshold': 1.9 },
-            { 'B1': 1.0, 'B2': 1.0, 'B5': 1.0, 'threshold': 0.9 },
+            [ 1.0, 1.0, 1.0, 2.9 ],
+            [ 1.0, 1.0, 1.0, 1.9 ],
+            [ 1.0, 1.0, 1.0, 0.9 ],
 
-            { 'B1': 1.0, 'B2': 1.0, 'B5': 0.0, 'threshold': 1.9 },
-            { 'B1': 1.0, 'B2': 0.0, 'B5': 1.0, 'threshold': 1.9 },
-            { 'B1': 0.0, 'B2': 1.0, 'B5': 1.0, 'threshold': 1.9 },
+            [ 1.0, 1.0, 0.0, 1.9 ],
+            [ 1.0, 0.0, 1.0, 1.9 ],
+            [ 0.0, 1.0, 1.0, 1.9 ],
 
-            { 'B1': 1.0, 'B2': 1.0, 'B5': 0.0, 'threshold': 0.9 },
-            { 'B1': 1.0, 'B2': 0.0, 'B5': 1.0, 'threshold': 0.9 },
-            { 'B1': 0.0, 'B2': 1.0, 'B5': 1.0, 'threshold': 0.9 },
+            [ 1.0, 1.0, 0.0, 0.9 ],
+            [ 1.0, 0.0, 1.0, 0.9 ],
+            [ 0.0, 1.0, 1.0, 0.9 ],
 
-            { 'B1': 1.0, 'B2': 0.0, 'B5': 0.0, 'threshold': 0.9 },
-            { 'B1': 0.0, 'B2': 1.0, 'B5': 0.0, 'threshold': 0.9 },
-            { 'B1': 0.0, 'B2': 0.0, 'B5': 1.0, 'threshold': 0.9 },
-        ])
+            [ 1.0, 0.0, 0.0, 0.9 ],
+            [ 0.0, 1.0, 0.0, 0.9 ],
+            [ 0.0, 0.0, 1.0, 0.9 ],
+        ], columns=['term2', 'term4', 'B2', 'threshold'])
+
+        print(df_params)
 
         lr_cols = {
-            '造影超音波/リンパ節_B_1': 'b1',
+            '造影超音波/リンパ節_term_2': 't2',
+            '造影超音波/リンパ節_term_4': 't4',
+            # '造影超音波/リンパ節_B_1': 'b1',
             '造影超音波/リンパ節_B_2': 'b2',
-            '造影超音波/リンパ節_B_5': 'b5',
+            # '造影超音波/リンパ節_B_5': 'b5',
             # col_el_short: 'el_short',
             # col_ep_long: 'ep_long',
             target_col: 'target',
