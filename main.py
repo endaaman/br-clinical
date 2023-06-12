@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from collections import OrderedDict, namedtuple
 import pickle
 from glob import glob
+import itertools
 
 from tqdm import tqdm
 from pydantic import BaseModel, Field
@@ -49,8 +50,8 @@ plain_primary_cols = [
     '非造影超音波/原発巣_BIRADS',
     '非造影超音波/原発巣_lesion',
     '非造影超音波/原発巣_mass',
-    '非造影超音波/原発巣_浸潤径_最大径',
-    '非造影超音波/原発巣_浸潤径_短径',
+    col_pp_long := '非造影超音波/原発巣_浸潤径_最大径',
+    col_pp_short := '非造影超音波/原発巣_浸潤径_短径',
     '非造影超音波/原発巣_浸潤径_第3軸径',
     '非造影超音波/原発巣_乳管内進展_最大径',
     '非造影超音波/原発巣_乳管内進展_短径',
@@ -64,7 +65,7 @@ enhance_primary_cols = [
     '造影超音波/原発巣_TIC_静脈層',
     *[f'造影超音波/原発巣_TIC_A{i}' for i in range(1, 10)],
     col_ep_long := '造影超音波/原発巣_浸潤径_最大径',
-    '造影超音波/原発巣_浸潤径_短径',
+    col_ep_short := '造影超音波/原発巣_浸潤径_短径',
     '造影超音波/原発巣_浸潤径_第3軸径',
     '造影超音波/原発巣_乳管内進展_最大径',
     '造影超音波/原発巣_乳管内進展_短径',
@@ -528,11 +529,23 @@ class CLI(BaseMLCLI):
 
     def run_lr(self, a):
         lr_cols = {
+            '造影超音波/リンパ節_term_1': 't1',
             '造影超音波/リンパ節_term_2': 't2',
+            '造影超音波/リンパ節_term_3': 't3',
             '造影超音波/リンパ節_term_4': 't4',
-            # '造影超音波/リンパ節_B_1': 'b1',
+            '造影超音波/リンパ節_term_5': 't5',
+            '造影超音波/リンパ節_term_5': 't5',
+            '造影超音波/リンパ節_term_6': 't6',
+            '造影超音波/リンパ節_term_7': 't7',
+            '造影超音波/リンパ節_term_8': 't8',
+            '造影超音波/リンパ節_term_9': 't9',
+            '造影超音波/リンパ節_B_1': 'b1',
             '造影超音波/リンパ節_B_2': 'b2',
-            # '造影超音波/リンパ節_B_5': 'b5',
+            '造影超音波/リンパ節_B_3': 'b3',
+            '造影超音波/リンパ節_B_4': 'b4',
+            '造影超音波/リンパ節_B_5': 'b5',
+            '造影超音波/リンパ節_B_6': 'b6',
+
             # col_ep_long: 'ep_long',
             # col_pl_short: 'pl_short',
             # col_el_short: 'el_short',
@@ -541,7 +554,11 @@ class CLI(BaseMLCLI):
             target_col: 'target',
             'test': 'test',
         }
-        df = self.df_all[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
+        df = self.df_all[list(lr_cols.keys())].rename(columns=lr_cols)
+        print(len(df))
+        # df = df.dropna()
+        df = df.fillna(0.5)
+        print(len(df))
 
         df_train = df[df['test'] < 1].drop(['test'], axis=1)
         df_test = df[df['test'] > 0].drop(['test'], axis=1)
@@ -561,15 +578,58 @@ class CLI(BaseMLCLI):
 
         _plot([Experiment.from_result('lr', 'LR', result)], a.legends, a.dest, a.show)
 
+
+    def run_lr_search(self, a):
+        lr_cols = {
+            '造影超音波/リンパ節_term_1': 't1',
+            '造影超音波/リンパ節_term_2': 't2',
+            '造影超音波/リンパ節_term_3': 't3',
+            '造影超音波/リンパ節_term_4': 't4',
+            '造影超音波/リンパ節_term_5': 't5',
+            '造影超音波/リンパ節_term_5': 't5',
+            '造影超音波/リンパ節_term_6': 't6',
+            '造影超音波/リンパ節_term_7': 't7',
+            '造影超音波/リンパ節_term_8': 't8',
+            '造影超音波/リンパ節_term_9': 't9',
+            '造影超音波/リンパ節_B_1': 'b1',
+            '造影超音波/リンパ節_B_2': 'b2',
+            '造影超音波/リンパ節_B_3': 'b3',
+            '造影超音波/リンパ節_B_4': 'b4',
+            '造影超音波/リンパ節_B_5': 'b5',
+            '造影超音波/リンパ節_B_6': 'b6',
+            target_col: 'target',
+            'test': 'test',
+        }
+        data = []
+        kkk = list(itertools.combinations(list(lr_cols.keys())[0:-2], 2))
+        for kk in tqdm(kkk):
+            kk = list(kk) + [target_col]
+            df = self.df_all[kk].dropna().rename(columns=lr_cols)
+            x = df.drop(['target'], axis=1)
+            y = df['target']
+
+            pred = x.sum(axis=1) > 0.0
+            # lr = LogisticRegression(random_state=a.seed)
+            # lr.fit(train_x, train_y)
+            # pred = lr.predict_proba(test_x)[:, 1]
+
+            result = Result(y, pred)
+            m = Metrics.from_result(result)
+            data.append([kk[0], kk[1], m.auc,
+                         m.scores.loc['youden', 'acc'],
+                         m.scores.loc['youden', 'recall'],
+                         m.scores.loc['youden', 'specificity'],
+                         ])
+
+        report = pd.DataFrame(data, columns=['k0', 'k1', 'auc',
+                                             'acc', 'recall', 'specificity'])
+        report.to_excel(J(a.dest, 'lr_search.xlsx'))
+
     def run_lr_coef(self, a):
         lr_cols = {
             '造影超音波/リンパ節_term_2': 't2',
-            '造影超音波/リンパ節_term_4': 't4',
-            # '造影超音波/リンパ節_B_1': 'b1',
             '造影超音波/リンパ節_B_2': 'b2',
-            # '造影超音波/リンパ節_B_3': 'b3',
-            # '造影超音波/リンパ節_B_4': 'b4',
-            # '造影超音波/リンパ節_B_5': 'b5',
+            '造影超音波/リンパ節_B_5': 'b5',
             # col_pl_long: 'pl_long',
             # col_el_long: 'el_short',
             # col_el_long: 'el_long',
@@ -616,17 +676,22 @@ class CLI(BaseMLCLI):
         }
 
     def run_best_coef(self, a):
+        lr_cols = {
+            '造影超音波/リンパ節_term_1': 't1',
+            # '造影超音波/リンパ節_term_2': 't2',
+            # '造影超音波/リンパ節_term_3': 't3',
+            # '造影超音波/リンパ節_term_4': 't4',
+            # '造影超音波/リンパ節_B_1': 'b1',
+            '造影超音波/リンパ節_B_2': 'b2',
+            '造影超音波/リンパ節_B_5': 'b5',
+            # '造影超音波/リンパ節_B_5': 'b5',
+
+            # col_el_short: 'el_short',
+            # col_ep_long: 'ep_long',
+            target_col: 'target',
+        }
+
         df_params = pd.DataFrame([
-            # {'B2': 8.74, 'B5': 9.61, 'short':1.0, 'threshold': 7.1 },
-            # {'B2': 9.00, 'B5':10.00, 'short':1.0, 'threshold': 7.0 },
-            # {'B2':10.00, 'B5':10.00, 'short':1.0, 'threshold': 7.0 },
-
-            # {'B2': 1.0, 'B5': 1.15, 'threshold': 1.0},
-            # {'B2': 1.0, 'B5': 1.00, 'threshold': 1.0 },
-            # {'B2': 1.0, 'B5': 1.01, 'threshold': 1.0 },
-            # {'B2': 0.0, 'B5': 1.01, 'threshold': 1.0 },
-            # {'B2': 1.0, 'B5': 1.00, 'threshold': 1.1 },
-
             [ 1.0, 1.0, 1.0, 2.9 ],
             [ 1.0, 1.0, 1.0, 1.9 ],
             [ 1.0, 1.0, 1.0, 0.9 ],
@@ -642,20 +707,8 @@ class CLI(BaseMLCLI):
             [ 1.0, 0.0, 0.0, 0.9 ],
             [ 0.0, 1.0, 0.0, 0.9 ],
             [ 0.0, 0.0, 1.0, 0.9 ],
-        ], columns=['term2', 'term4', 'B2', 'threshold'])
+        ], columns=[*list((lr_cols.values()))[:3], 'threshold'])
 
-        print(df_params)
-
-        lr_cols = {
-            '造影超音波/リンパ節_term_2': 't2',
-            '造影超音波/リンパ節_term_4': 't4',
-            # '造影超音波/リンパ節_B_1': 'b1',
-            '造影超音波/リンパ節_B_2': 'b2',
-            # '造影超音波/リンパ節_B_5': 'b5',
-            # col_el_short: 'el_short',
-            # col_ep_long: 'ep_long',
-            target_col: 'target',
-        }
         df = self.df_all[list(lr_cols.keys())].dropna().rename(columns=lr_cols)
         X = df.drop('target', axis=1)
         Y = df['target']
@@ -676,12 +729,26 @@ class CLI(BaseMLCLI):
 
     def run_corr(self, a):
         cols = {
+            '造影超音波/リンパ節_term_1': 't1',
+            '造影超音波/リンパ節_term_2': 't2',
+            '造影超音波/リンパ節_term_3': 't3',
+            '造影超音波/リンパ節_term_4': 't4',
+            '造影超音波/リンパ節_term_5': 't5',
+            '造影超音波/リンパ節_term_5': 't5',
+            '造影超音波/リンパ節_term_6': 't6',
+            '造影超音波/リンパ節_term_7': 't7',
+            '造影超音波/リンパ節_term_8': 't8',
+            '造影超音波/リンパ節_term_9': 't9',
             '造影超音波/リンパ節_B_1': 'B1',
             '造影超音波/リンパ節_B_2': 'B2',
             '造影超音波/リンパ節_B_3': 'B3',
             '造影超音波/リンパ節_B_4': 'B4',
             '造影超音波/リンパ節_B_5': 'B5',
             '造影超音波/リンパ節_B_6': 'B6',
+            col_pp_short: 'short axis(plain primary)',
+            col_pp_long: 'long axis(plain primary)',
+            col_ep_short: 'short axis(enhance primary)',
+            col_ep_long: 'long axis(enhance primary)',
             col_el_short: 'short axis(enhance lymph)',
             col_el_long: 'long axis(enhance lymph)',
             col_pl_short: 'short axis(plain lymph)',
@@ -691,7 +758,7 @@ class CLI(BaseMLCLI):
 
         df = self.df_all[list(cols.keys())].dropna().rename(columns=cols)
 
-        plt.figure(figsize=(12, 9))
+        plt.figure(figsize=(24, 14))
         ax = sns.heatmap(df.corr(), vmax=1, vmin=-1, center=0, annot=True)
         ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
         plt.subplots_adjust(bottom=0.25, left=0.2)
