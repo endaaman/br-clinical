@@ -233,15 +233,16 @@ def train_single_gbm(x_train, y_train, x_valid, y_valid):
             'random_state': get_global_seed(),
             'boosting': 'gbdt',
             'metric': 'auc',
+            # 'metric': 'binary_logloss',
             'verbosity': -1,
-            'zero_as_missing': True,
+            'zero_as_missing': False,
         },
         train_set=train_set,
-        num_boost_round=10000,
+        num_boost_round=100,
         valid_sets=valid_sets,
         # early_stopping_rounds=150,
         callbacks=[
-            lgb.early_stopping(stopping_rounds=10, verbose=False),
+            lgb.early_stopping(stopping_rounds=50, verbose=False),
             lgb.log_evaluation(False)
         ],
         categorical_feature=[],
@@ -544,23 +545,22 @@ class CLI(BaseMLCLI):
 
     def run_lr(self, a):
         lr_cols = {
-            '造影超音波/リンパ節_term_1': 't1',
+            # '造影超音波/リンパ節_term_1': 't1',
             '造影超音波/リンパ節_term_2': 't2',
-            '造影超音波/リンパ節_term_3': 't3',
-            '造影超音波/リンパ節_term_4': 't4',
-            '造影超音波/リンパ節_term_5': 't5',
-            '造影超音波/リンパ節_term_5': 't5',
-            '造影超音波/リンパ節_term_6': 't6',
-            '造影超音波/リンパ節_term_7': 't7',
-            '造影超音波/リンパ節_term_8': 't8',
-            '造影超音波/リンパ節_term_9': 't9',
-            '造影超音波/リンパ節_B_1': 'b1',
+            # '造影超音波/リンパ節_term_3': 't3',
+            # '造影超音波/リンパ節_term_4': 't4',
+            # '造影超音波/リンパ節_term_5': 't5',
+            # '造影超音波/リンパ節_term_5': 't5',
+            # '造影超音波/リンパ節_term_6': 't6',
+            # '造影超音波/リンパ節_term_7': 't7',
+            # '造影超音波/リンパ節_term_8': 't8',
+            # '造影超音波/リンパ節_term_9': 't9',
+            # '造影超音波/リンパ節_B_1': 'b1',
             '造影超音波/リンパ節_B_2': 'b2',
-            '造影超音波/リンパ節_B_3': 'b3',
-            '造影超音波/リンパ節_B_4': 'b4',
+            # '造影超音波/リンパ節_B_3': 'b3',
+            # '造影超音波/リンパ節_B_4': 'b4',
             '造影超音波/リンパ節_B_5': 'b5',
-            '造影超音波/リンパ節_B_6': 'b6',
-
+            # '造影超音波/リンパ節_B_6': 'b6',
             # col_ep_long: 'ep_long',
             # col_pl_short: 'pl_short',
             # col_el_short: 'el_short',
@@ -939,7 +939,8 @@ class CLI(BaseMLCLI):
         self.df_all[['test']].to_excel(with_wrote(f'data/train_test_split_{a.rev}_{a.seed}.xlsx'))
 
     def run_i(self, a):
-        pass
+        for c in enhance_lymph_cols:
+            print(c)
 
 cli = CLI()
 if __name__ == '__main__':
