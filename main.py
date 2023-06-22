@@ -410,7 +410,16 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
         )
 
     if True:
-        pass
+        vv = (
+            ('label', 0.3, 0.9,),
+            ('label2', 0.2, 0.8,),
+            # ('label', 0.3, 0.9,),
+        )
+        for (label, recall, spec) in vv:
+            x = 1-spec
+            y = recall
+            ax.scatter((x, ), (y, ), color='grey')
+            ax.text(x+0.02, y+0.02, label)
 
     ax.set_ylabel('Sensitivity')
     ax.set_xlabel('1 - Specificity')
