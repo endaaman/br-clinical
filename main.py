@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 import numpy as np
 import pandas as pd
 import scipy.stats as st
+import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import StratifiedKFold, train_test_split
@@ -23,6 +24,8 @@ import lightgbm as lgb
 
 from endaaman import Timer, with_wrote
 from endaaman.ml import get_global_seed, BaseMLArgs, BaseMLCLI
+
+matplotlib.use('TkAgg')
 
 
 J = os.path.join
@@ -405,6 +408,9 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
             m.fpr, m.tpr,
             label=f'{legend}={value}',
         )
+
+    if True:
+        pass
 
     ax.set_ylabel('Sensitivity')
     ax.set_xlabel('1 - Specificity')
