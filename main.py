@@ -16,6 +16,8 @@ import pandas as pd
 import scipy.stats as st
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.markers as mmark
+from matplotlib.lines import Line2D
 import seaborn as sns
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.linear_model import LogisticRegression
@@ -400,31 +402,42 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
     legends = legends.split(':')
     if not (all(legends) and len(legends) == len(ee)):
         legends = [e.label for e in ee]
-    fig = plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=(8, 6))
     ax = fig.add_subplot(111)
     for e, legend in zip(ee, legends):
         m = e.metrics
         value = f'{m.auc*100:.1f}% ({m.ci[0]*100:.1f}-{m.ci[1]*100:.1f}%)'
-        ax.plot(
+        lines = ax.plot(
             m.fpr, m.tpr,
             label=f'{legend}={value}',
         )
 
     if True:
         vv = (
-            ('label', 0.3, 0.9,),
-            ('label2', 0.2, 0.8,),
-            # ('label', 0.3, 0.9,),
+            ('Clinical diagnosis of CEUS', 0.467, 0.926, 'tab:blue'),
+            ('Clinical diagnosis of plain US', 0.394, 0.919, 'tab:orange'),
         )
-        for (label, recall, spec) in vv:
+        for (label, recall, spec, color) in vv:
             x = 1-spec
             y = recall
-            ax.scatter((x, ), (y, ), color='grey')
-            ax.text(x+0.02, y+0.02, label)
+            scatter = ax.scatter((x, ), (y, ), color=color, label=label, s=64)
+            # ax.text(x+0.02, y+0.02, label)
+
+        lines = [
+            Line2D([0], [0], label=vv[0][0],
+                   markerfacecolor='tab:blue', color='w', marker='o', markersize=8),
+            Line2D([0], [0], label=vv[1][0],
+                   markerfacecolor='tab:orange', color='w', marker='o', markersize=8),
+
+            Line2D([0], [0], label='ML based diagnosis of CEUS',
+                   color='tab:blue'),
+            Line2D([0], [0], label='ML based diagnosis of plain US',
+                   color='tab:orange'),
+        ]
 
     ax.set_ylabel('Sensitivity')
     ax.set_xlabel('1 - Specificity')
-    plt.legend(loc='lower right')
+    plt.legend(loc='lower right', handles=lines)
 
     suffix = codes_to_hex([e.code for e in ee])
     p = J(dest, f'roc_{suffix}.png')
@@ -760,20 +773,20 @@ class CLI(BaseMLCLI):
             '造影超音波/リンパ節_B_4': 'B4',
             '造影超音波/リンパ節_B_5': 'B5',
             '造影超音波/リンパ節_B_6': 'B6',
-            col_pp_short: 'short axis(plain primary)',
-            col_pp_long: 'long axis(plain primary)',
-            col_ep_short: 'short axis(enhance primary)',
-            col_ep_long: 'long axis(enhance primary)',
-            col_el_short: 'short axis(enhance lymph)',
-            col_el_long: 'long axis(enhance lymph)',
-            col_pl_short: 'short axis(plain lymph)',
-            col_pl_long: 'long axis(plain lymph)',
+            col_pp_short: 'short(pl pr)',
+            col_pp_long: 'long(pl pr)',
+            col_ep_short: 'short(en pr)',
+            col_ep_long: 'long(en pr)',
+            col_pl_short: 'short(pl ly)',
+            col_pl_long: 'long(pl ly)',
+            col_el_short: 'short(en ly)',
+            col_el_long: 'long(en ly)',
             target_col: 'target',
         }
 
         df = self.df_all[list(cols.keys())].dropna().rename(columns=cols)
 
-        plt.figure(figsize=(24, 14))
+        plt.figure(figsize=(26, 14))
         ax = sns.heatmap(df.corr(), vmax=1, vmin=-1, center=0, annot=True)
         ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
         plt.subplots_adjust(bottom=0.25, left=0.2)
