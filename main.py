@@ -29,6 +29,11 @@ from endaaman.ml import get_global_seed, BaseMLArgs, BaseMLCLI
 
 matplotlib.use('TkAgg')
 
+plt.rcParams['font.family'] = 'Times New Roman'
+# plt.rcParams['font.family'] = 'Arial'
+plt.rcParams['font.size'] = 16
+plt.rcParams['text.color'] = 'black'
+
 
 J = os.path.join
 sns.set(style='white')
@@ -300,7 +305,7 @@ def train_gbm(df, num_folds=5, reduction='median'):
             raise RuntimeError(f'Invalid reduction: {reduction}')
 
     gt =  df_test[target_col].values
-    return Result(gt, pred), importance
+    return Result(gt, pred), models, importance
 
 def auc_ci(y_true, y_score):
     y_true = y_true.astype(bool)
@@ -414,13 +419,13 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
 
     if True:
         vv = (
-            ('Clinical diagnosis of CEUS', 0.467, 0.926, 'tab:blue'),
-            ('Clinical diagnosis of conventional US', 0.394, 0.919, 'tab:orange'),
+            ('Clinical diagnosis of CEUS', 0.45, 0.948, 'tab:blue'),
+            ('Clinical diagnosis of conventional  US', 0.361, 0.933, 'tab:orange'),
         )
         for (label, recall, spec, color) in vv:
             x = 1-spec
             y = recall
-            scatter = ax.scatter((x, ), (y, ), color=color, label=label, s=64)
+            scatter = ax.scatter((x, ), (y, ), color=color, label=label, s=32)
             # ax.text(x+0.02, y+0.02, label)
 
         lines = [
@@ -488,7 +493,7 @@ class CLI(BaseMLCLI):
         experiments = []
         for code, (label, cols) in tqdm(CODE_MAP.items()):
             df = self.df_all[cols + [target_col, 'test']]
-            result, importance = train_gbm(df, reduction=a.reduction)
+            result, models, importance = train_gbm(df, reduction=a.reduction)
             with open(J(a.dest, 'results', f'{code}.pickle'), 'wb') as f:
                 pickle.dump(result, f)
             metrics = Metrics.from_result(result)
@@ -500,6 +505,15 @@ class CLI(BaseMLCLI):
                 code=code,
                 importance=importance,
             ))
+
+            fig, axes = plt.subplots(len(models), 1, figsize=(5, 10), dpi=300)
+            for model, ax in zip(models, axes):
+                lgb.plot_tree(model, ax=ax)
+            os.makedirs(J(a.dest, 'structure'), exist_ok=True)
+            plt.savefig(J(a.dest, 'structure', f'{code}.png'))
+            plt.close()
+            # plt.show()
+
 
         # write importance
         with pd.ExcelWriter(J(a.dest, 'importance.xlsx'), engine='xlsxwriter') as writer:
