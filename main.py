@@ -402,7 +402,7 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
     legends = legends.split(':')
     if not (all(legends) and len(legends) == len(ee)):
         legends = [e.label for e in ee]
-    fig = plt.figure(figsize=(8, 6))
+    fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111)
     for e, legend in zip(ee, legends):
         m = e.metrics
@@ -415,7 +415,7 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
     if True:
         vv = (
             ('Clinical diagnosis of CEUS', 0.467, 0.926, 'tab:blue'),
-            ('Clinical diagnosis of plain US', 0.394, 0.919, 'tab:orange'),
+            ('Clinical diagnosis of conventional US', 0.394, 0.919, 'tab:orange'),
         )
         for (label, recall, spec, color) in vv:
             x = 1-spec
@@ -431,7 +431,7 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
 
             Line2D([0], [0], label='ML based diagnosis of CEUS',
                    color='tab:blue'),
-            Line2D([0], [0], label='ML based diagnosis of plain US',
+            Line2D([0], [0], label='ML based diagnosis of conventional US',
                    color='tab:orange'),
         ]
 
