@@ -409,7 +409,7 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
     legends = legends.split(':')
     if not (all(legends) and len(legends) == len(ee)):
         legends = [e.label for e in ee]
-    fig = plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=(8, 6))
     ax = fig.add_subplot(111)
     for e, legend in zip(ee, legends):
         m = e.metrics
@@ -423,8 +423,8 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
 
     if True:
         vv = (
-            ('Clinical diagnosis of CEUS', 0.45, 0.948, 'tab:blue'),
-            ('Clinical diagnosis of conventional  US', 0.361, 0.933, 'tab:orange'),
+            ("Radiologists' diagnosis of CEUS", 0.45, 0.948, 'tab:blue'),
+            ("Radiologists' diagnosis of conventional  US", 0.361, 0.933, 'tab:orange'),
         )
         for (label, recall, spec, color) in vv:
             x = 1-spec
@@ -450,7 +450,7 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
 
     p = J(dest, f'roc_{suffix}.png')
     print(f'wrote {p}')
-    plt.savefig(p)
+    plt.savefig(p, dpi=300)
     if show:
         plt.show()
 
