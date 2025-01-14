@@ -403,6 +403,8 @@ class GBMExperiment(Experiment):
 
 
 def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
+    suffix = codes_to_hex([e.code for e in ee])
+
     ee = sorted(ee, key=lambda e: -e.metrics.auc)
     legends = legends.split(':')
     if not (all(legends) and len(legends) == len(ee)):
@@ -416,6 +418,8 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
             m.fpr, m.tpr,
             label=f'{legend}={value}',
         )
+        pd.DataFrame({'spec': 1-m.fpr, 'recall': m.tpr}).to_excel(J(dest, f'metrics_{e.label}_{suffix}.xlsx'))
+        print(f'{e.label} auc={m.auc}')
 
     if True:
         vv = (
@@ -444,7 +448,6 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
     ax.set_xlabel('1 - Specificity')
     plt.legend(loc='lower right', handles=lines)
 
-    suffix = codes_to_hex([e.code for e in ee])
     p = J(dest, f'roc_{suffix}.png')
     print(f'wrote {p}')
     plt.savefig(p)
@@ -506,13 +509,15 @@ class CLI(BaseMLCLI):
                 importance=importance,
             ))
 
-            fig, axes = plt.subplots(len(models), 1, figsize=(5, 10), dpi=300)
-            for model, ax in zip(models, axes):
-                lgb.plot_tree(model, ax=ax)
-            os.makedirs(J(a.dest, 'structure'), exist_ok=True)
-            plt.savefig(J(a.dest, 'structure', f'{code}.png'))
-            plt.close()
-            # plt.show()
+            # draw structure
+            if False:
+                fig, axes = plt.subplots(len(models), 1, figsize=(5, 10), dpi=300)
+                for model, ax in zip(models, axes):
+                    lgb.plot_tree(model, ax=ax)
+                os.makedirs(J(a.dest, 'structure'), exist_ok=True)
+                plt.savefig(J(a.dest, 'structure', f'{code}.png'))
+                plt.close()
+                # plt.show()
 
 
         # write importance
