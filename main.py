@@ -414,6 +414,7 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
     for e, legend in zip(ee, legends):
         m = e.metrics
         value = f'{m.auc*100:.1f}% ({m.ci[0]*100:.1f}-{m.ci[1]*100:.1f}%)'
+        print(m.scores)
         lines = ax.plot(
             m.fpr, m.tpr,
             label=f'{legend}={value}',
