@@ -319,6 +319,27 @@ def auc_ci(y_true, y_score):
     upper = AUC + 1.96*SE_AUC
     return np.clip([lower, upper], 0.0, 1.0)
 
+def compare_auc_delong(y_true, y_pred1, y_pred2):
+    # DeLongのテストを実装
+    # AUCの差の標準誤差を計算
+    # 信頼区間も計算可能
+    n1 = len(y_pred1)
+    # それぞれのAUCを計算
+    fpr1, tpr1, _ = skmetrics.roc_curve(y_true, y_pred1)
+    fpr2, tpr2, _ = skmetrics.roc_curve(y_true, y_pred2)
+    auc1 = skmetrics.auc(fpr1, tpr1)
+    auc2 = skmetrics.auc(fpr2, tpr2)
+    # 標準誤差の計算
+    se = np.sqrt((auc1 * (1-auc1) + auc2 * (1-auc2)) / n1)
+    # z統計量の計算
+    z = (auc1 - auc2) / se
+    # p値の計算
+    p_value = 2 * (1 - st.norm.cdf(abs(z)))
+    # 95%信頼区間の計算
+    ci_lower = (auc1 - auc2) - 1.96 * se
+    ci_upper = (auc1 - auc2) + 1.96 * se
+    return p_value, (ci_lower, ci_upper)
+
 def calc_metrics(gt, pred):
     fpr, tpr, thresholds = skmetrics.roc_curve(gt, pred)
     auc = skmetrics.auc(fpr, tpr)
@@ -414,7 +435,9 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
     for e, legend in zip(ee, legends):
         m = e.metrics
         value = f'{m.auc*100:.1f}% ({m.ci[0]*100:.1f}-{m.ci[1]*100:.1f}%)'
-        print(m.scores)
+        print(e.label)
+        print(e.result.pred)
+        print(e.result.gt)
         lines = ax.plot(
             m.fpr, m.tpr,
             label=f'{legend}={value}',
@@ -422,10 +445,13 @@ def _plot(ee:list[Experiment], legends:str, dest:str, show:bool):
         pd.DataFrame({'spec': 1-m.fpr, 'recall': m.tpr}).to_excel(J(dest, f'metrics_{e.label}_{suffix}.xlsx'))
         print(f'{e.label} auc={m.auc}')
 
+    if len(ee) == 2:
+        print(compare_auc_delong(ee[0].result.gt, ee[0].result.pred, ee[1].result.pred))
+
     if True:
         vv = (
-            ("Radiologists' diagnosis of CEUS", 0.45, 0.948, 'tab:blue'),
-            ("Radiologists' diagnosis of conventional  US", 0.361, 0.933, 'tab:orange'),
+            ("Radiologist diagnosis of CEUS", 0.45, 0.948, 'tab:blue'),
+            ("Radiologist diagnosis of conventional  US", 0.361, 0.933, 'tab:orange'),
         )
         for (label, recall, spec, color) in vv:
             x = 1-spec
